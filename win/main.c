@@ -7,8 +7,6 @@
 int main(int argc, char** argv) {
     sdl_init();
     
-    tab ed = editor_new("");
-
     SDL_Delay(1500);
     return 0;
 //     terminal_new();
