@@ -1,13 +1,16 @@
 #include <SDL.h>
 #include "sdlcore.h"
-#include "tab.h"
+#include "event.h"
 // #include "text.h"
 // #include "tabs.h"
 
 int main(int argc, char** argv) {
     sdl_init();
-    
-    SDL_Delay(1500);
+
+    while(1) {
+        event_handle();
+    }
+
     return 0;
 //     terminal_new();
 //     tabs_init();

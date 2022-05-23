@@ -6,7 +6,7 @@ make all --print-data-base --no-builtin-variables --no-builtin-rules --question
 # This is free software: you are free to change and redistribute it.
 # There is NO WARRANTY, to the extent permitted by law.
 
-# Make data base, printed on Mon May 23 00:25:27 2022
+# Make data base, printed on Mon May 23 01:49:56 2022
 
 # Variables
 
@@ -17,7 +17,7 @@ LC_ALL = C
 # environment
 GTK_RC_FILES = /etc/gtk/gtkrc:/home/brad/.gtkrc:/home/brad/.config/gtkrc
 # environment
-VSCODE_IPC_HOOK_EXTHOST = /run/user/1000/vscode-ipc-78d07809-a3a9-420d-98f3-503929e6f673.sock
+VSCODE_IPC_HOOK_EXTHOST = /run/user/1000/vscode-ipc-83a0d1fc-7457-49db-9a77-bf08c3990a88.sock
 # environment
 VSCODE_CWD = /home/brad
 # default
@@ -83,7 +83,7 @@ MAKEFILE_LIST := Makefile
 # environment
 VSCODE_VERBOSE_LOGGING = true
 # environment
-VSCODE_PID = 24412
+VSCODE_PID = 46969
 # environment
 XDG_SESSION_TYPE = x11
 # automatic
@@ -256,7 +256,7 @@ all:
 # strcache performance: lookups = 18 / hit rate = 27%
 # hash-table stats:
 # Load=13/8192=0%, Rehash=0, Collisions=0/18=0%
-# Finished Make data base on Mon May 23 00:25:27 2022
+# Finished Make data base on Mon May 23 01:49:56 2022
 
  
 make: *** No rule to make target 'all'.  Stop.
