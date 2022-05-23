@@ -1,4 +1,4 @@
-#include <SDL.h>
+#include <SDL2/SDL.h>
 #include "sdlcore.h"
 #include "event.h"
 // #include "text.h"
