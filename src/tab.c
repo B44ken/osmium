@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "event.h"
+#include "file.h"
 
 typedef struct {
     FILE* file;
@@ -19,24 +20,9 @@ int tab_count = 0;
 tab tab_editor(char* file) {
     tab t;
     t.name = file;
-
-    char touch_cmd[256] = "touch ";
-    strcat(touch_cmd, t.name);
-    system(touch_cmd);
-
-    t.file = fopen(t.name, "r+");
-    if(t.file == NULL) {
-        printf("failed to open: %s\n", t.file);
-    }
-    fseek(t.file, 0, SEEK_END);
-    int file_size = ftell(t.file);
-    fseek(t.file, 0, SEEK_SET);
-    t.editor = malloc(file_size + 8192);
-    fread(t.editor, file_size, 1, t.file);
-    
     t.mode = 'e';
+    file_open(&t);
     t.cursor[0] = strlen(t.editor);
-
     return t;
 }
 

@@ -32,7 +32,6 @@ int main(int argc, char** argv) {
             }
         } else {
             tab_open_editor(argv[i]);
-            printf("opening %s, no %d\n", argv[i], tab_count);
         }
     }
 

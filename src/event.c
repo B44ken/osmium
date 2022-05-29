@@ -32,7 +32,7 @@ void event_key(char key) {
         event_type('\n');
     }
     if(key == 8) {
-        editor[cursor[0]] = 0;
+        memmove(editor+cursor[0]-1, editor+cursor[0], strlen(editor+cursor[0])+1);
         if(cursor[0] > 0) {
             cursor[0]--;
         }
