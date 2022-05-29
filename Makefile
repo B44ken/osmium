@@ -19,7 +19,7 @@ c:
 
 
 cwin:
-	x86_64-w64-mingw32-gcc src/*.c $(winflags) -o osmium.exe
+	x86_64-w64-mingw32-gcc src/*.c $(winflags) -o build/osmium.exe
 
 go:
 	GOOS='linux' go build util/tree.go
