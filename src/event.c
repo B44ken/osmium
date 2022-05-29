@@ -1,6 +1,7 @@
 #include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "tab.h"
 #include "draw.h"
 #include "file.h"
