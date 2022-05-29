@@ -3,40 +3,38 @@
 #include <stdlib.h>
 #include "tab.h"
 #include "draw.h"
+#include "file.h"
 
 SDL_Event event;
 char* editor;
 int editorsize = 4096;
-int cursor = 0;
-extern int win_width;
-
+int* cursor = 0;
 
 void event_update_editor() {
-    cursor = tab_focused->cursor[0];
+    cursor = tab_focused->cursor;
     editor = tab_focused->editor;
 }
 
 void event_type(char key) {
     if((key >= 20 && key <= 126) || key == '\n') {
-        editor[cursor] = key;
-        editor[cursor+1] = 0;
-        cursor++;
+        editor[cursor[0]] = key;
+        editor[cursor[0]+1] = 0;
+        cursor[0]++;
     }
 
-    if(cursor*2 > editorsize) {
+    if(cursor[0]*2 > editorsize) {
         editorsize *= 2;
         editor = realloc(editor, editorsize);
     }
-
 }
 void event_key(char key) {
     if(key == 13) {
         event_type('\n');
     }
     if(key == 8) {
-        editor[cursor] = 0;
-        if(cursor > 0) {
-            cursor--;
+        editor[cursor[0]] = 0;
+        if(cursor[0] > 0) {
+            cursor[0]--;
         }
     }
 }
@@ -44,16 +42,33 @@ void event_key(char key) {
 void event_button(int x, int y, int which) {
     if(y > 32) { return; }
     int fromback = win_width - x;
-    if(win_width - x > 160) {
-        int tabn = x / 160;
-        printf("button pressed: %d\n", tabn);
+    if(fromback > 140) {
+        int tabn = x / 140;
+        if(tabn < tab_count) {
+            tab_focused = &tab_list[tabn];
+            event_update_editor();
+            printf("button pressed: %d\n", tabn);
+        }
         return;
     }
     if(fromback < 100) {
         printf("button pressed: settings\n");
         return;
     }
-    printf("button pressed: +\n");
+    if(fromback < 140) {
+        tab_open_editor("/tmp/osm/untitled");
+        return;
+    }
+}
+
+void event_shortcut(char key) {
+        if(key == 's') {
+            file_save(tab_focused);
+        } else if(key == 'o') {
+            // tab_open_editor("/tmp/osm/untitled");
+        } else if(key == 'q') {
+            // tab_close(tab_focused);
+        }
 }
 
 void event_handle() {
@@ -66,9 +81,10 @@ void event_handle() {
     } else if(event.type == SDL_KEYDOWN) {
         char key = event.key.keysym.sym;
         if(event.key.keysym.mod & KMOD_LCTRL && key != -32) {
-            printf("ctrl + %d\n", key);
+            event_shortcut(key);
+        } else {
+            event_key(event.key.keysym.sym);
         }
-        event_key(event.key.keysym.sym);
     } else if(event.type == SDL_MOUSEBUTTONUP) {
         event_button(event.button.x, event.button.y, event.button.button);
     }

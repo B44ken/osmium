@@ -18,39 +18,40 @@ int tab_count = 0;
 
 tab tab_editor(char* file) {
     tab t;
-    if(tab_count == 32) {
-        printf("too many tabs: %d\n", tab_count);
-        return t;
-    }
     t.name = file;
-    t.file = fopen(t.name, "w+");
+
+    char touch_cmd[256] = "touch ";
+    strcat(touch_cmd, t.name);
+    system(touch_cmd);
+
+    t.file = fopen(t.name, "r+");
     if(t.file == NULL) {
         printf("failed to open: %s\n", t.file);
     }
-    // while(fgets(t.editor, 2048, t.file) != EOF) {}
-    system("sh -c 'echo hello! today is $(date -Idate) >> /tmp/osm/untitled1'");
-    t.editor = realloc(t.editor, /*  */8192);
-    char* file_error = fgets(t.editor, 64, t.file);
-    if(file_error == NULL) {
-        printf("?????\n");
-    }
+    fseek(t.file, 0, SEEK_END);
+    int file_size = ftell(t.file);
+    fseek(t.file, 0, SEEK_SET);
+    t.editor = malloc(file_size + 8192);
+    fread(t.editor, file_size, 1, t.file);
+    
     t.mode = 'e';
     t.cursor[0] = strlen(t.editor);
+
     return t;
 }
 
-// tab* tab_terminal(char* file) {
-//     tab t;
-//     t.name = file;
-//     t.mode = 't';
-//     tab_focused = &t;
-//     return &t;
-// }
+void tab_open_editor(char* name) {
+    tab_list[tab_count] = tab_editor(name);
+    tab_focused = &tab_list[tab_count];
+    tab_count++;
+    event_update_editor();
+}
 
 void tab_list_make() {
     tab_list = malloc(512);
     system("mkdir -p /tmp/osm/");
-    tab_list[0] = tab_editor("/tmp/osm/untitled1");
-    tab_focused = &tab_list[0];
+    if(tab_count == 0) {
+        tab_open_editor("/tmp/osm/untitled");
+    }
     event_update_editor();
 }

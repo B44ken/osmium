@@ -13,8 +13,10 @@ buildwin:
 	mkdir -p build
 	cp $(mingw)bin/SDL2.dll build
 	cp $(mingw)bin/SDL2_ttf.dll build
+
 c:
-	gcc src/*.c $(flags) -o build/osmium
+	gcc -g src/*.c $(flags) -o build/osmium
+
 
 cwin:
 	x86_64-w64-mingw32-gcc src/*.c $(winflags) -o osmium.exe
@@ -26,3 +28,7 @@ go:
 gowin:
 	GOOS='windows' go build util/tree.go
 	mv tree.exe build/osmtree.exe
+
+debug: c
+	gcc -g src/*.c $(flags) -o build/osmium
+	gdb -ex run --args build/osmium /tmp/osm/untitled1
