@@ -3,16 +3,14 @@
 
 package main;
 import (
-	"fmt"
 	"io/ioutil"
 )
 
-func main() {
-	tree := printDir(".", "")
-	fmt.Println(tree)
+func tree(dir string) string {
+	return makeTree(dir, "", "")
 }
 
-func printDir(dir string, buffer string) string {
+func makeTree(dir, buffer, prepend string) string {
 	buffer = ""
 	files, err := ioutil.ReadDir(dir)
 	if err != nil {
@@ -21,9 +19,10 @@ func printDir(dir string, buffer string) string {
 	for _, f := range files {
 		if f.Name()[0] == '.' { continue }
 		if f.IsDir() {
-			buffer += printDir(dir + "/" + f.Name(), buffer)
+			buffer += prepend + f.Name() + "/\n"
+			buffer += makeTree(dir + "/" + f.Name(), buffer, prepend + ". ")
 		} else {
-			buffer += dir + "/" + f.Name() + "\n"
+			buffer += prepend + f.Name() + "\n";
 		}
 	}
 	return buffer
