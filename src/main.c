@@ -6,6 +6,7 @@
 #include "ui.h"
 #include "event.h"
 #include "tab.h"
+#include "format.h"
 
 SDL_Window* window;
 SDL_Renderer* renderer;
@@ -23,6 +24,7 @@ void init() {
 }
 
 int main(int argc, char** argv) {
+    // format_demo();
     init();
 
     for(int i = 1; i < argc; i++) {
