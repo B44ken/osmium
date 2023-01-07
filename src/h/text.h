@@ -1,8 +1,12 @@
-#include <SDL2/SDL_ttf.h>
+#include <string>
+#include <vector>
 
-TTF_Font* make_font();
-void init_fonts();
-void draw_text();
+class EditorText {
+    public:
+    std::vector<std::string> lines;
+    std::string path;
+    std::string render(int columns, int scroll);
+    int cursor[2];
+};
 
-extern TTF_Font* editor_font;
-extern TTF_Font* ui_font;
+std::string wordWrap(std::string line, int softMax, int max);
