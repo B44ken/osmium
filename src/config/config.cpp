@@ -11,7 +11,7 @@ class Config {
 };
 
 Config::Config() {
-    read("/mnt/c/dev/osmium/build/default.json", "/mnt/c/dev/osmium/build/user.json");
+    read("/home/brad/dev/osmium/build/default.json", "/home/brad/dev/osmium/build/user.json");
 }
 
 void Config::read(std::string defaultsPath, std::string userConfigPath) {
