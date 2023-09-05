@@ -9,7 +9,7 @@
       "stopAtEntry": false,
       "externalConsole": true,
       "cwd": "c:/dev/osmium",
-      "program": "c:/dev/osmium/build/Debug/outDebug",
+      "program": "c:/dev/osmium/build/osmium.exe",
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [
