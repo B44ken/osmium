@@ -47,7 +47,7 @@ void Window::finish() {
 }
 
 void Window::drawCursor() {
-    // we really shouldn't be grabbing and slicing the string every frame but it works
+    // this snippet is comically ugly and doesn't even work
     std::string currentLine = wordWrapLine(editor->lines[editor->cursor[1]], editor->lineLength).substr(0, editor->cursor[0] + 1);
     int finalLength = currentLine.length() - currentLine.find_last_of("\n");
     int newlines = std::count(currentLine.begin(), currentLine.end(), '\n');
