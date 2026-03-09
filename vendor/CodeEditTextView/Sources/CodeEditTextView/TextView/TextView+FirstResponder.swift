@@ -10,6 +10,7 @@ import AppKit
 extension TextView {
     open override func becomeFirstResponder() -> Bool {
         isFirstResponder = true
+        selectionManager.updateSelectionViews(force: true)
         selectionManager.cursorTimer.resetTimer()
         needsDisplay = true
         return super.becomeFirstResponder()
