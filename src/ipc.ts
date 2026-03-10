@@ -3,27 +3,18 @@ import { access, mkdir, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-
 import type { AppCommand } from "./protocol.ts";
 
-export function osmDir(): string {
-  return path.join(os.homedir(), ".osm");
-}
-
-export function socketPath(): string {
-  return path.join(osmDir(), "osmium.sock");
-}
-
-export async function ensureOsmDir(): Promise<void> {
-  await mkdir(osmDir(), { recursive: true });
-}
+export const osmDir = () => path.join(os.homedir(), '.osm')
+export const socketPath = () => path.join(osmDir(), 'osmium.sock')
+export const ensureOsmDir = () => mkdir(osmDir(), { recursive: true })
 
 export async function sendCommand(command: AppCommand): Promise<boolean> {
   const target = socketPath();
 
   return await new Promise((resolve, reject) => {
     const client = net.createConnection(target);
-
+        
     client.once("connect", () => {
       client.end(`${JSON.stringify(command)}\n`);
       resolve(true);
@@ -32,9 +23,8 @@ export async function sendCommand(command: AppCommand): Promise<boolean> {
     client.once("error", async (error: NodeJS.ErrnoException) => {
       client.destroy();
       if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
-        if (error.code === "ECONNREFUSED") {
-          await safeRemove(target);
-        }
+        if (error.code === "ECONNREFUSED") 
+          await safeRemove(target)
         resolve(false);
         return;
       }

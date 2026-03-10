@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { spawn, spawnSync } from 'node:child_process'
+import { constants } from 'node:fs'
 import { access, mkdir, writeFile, symlink, rm } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ensureOsmDir, sendCommand, waitForSocket } from './ipc.ts'
 import { readConfig, writeConfigFlat } from './config.ts'
@@ -11,9 +12,27 @@ const OSM = fileURLToPath(new URL('..', import.meta.url))
 
 const cwd = process.cwd()
 
+async function resolveCommand(name: string) {
+  const dirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
+  const suffixes = process.platform === 'win32' ? ['', '.exe', '.cmd'] : ['']
+
+  for (const dir of dirs)
+    for (const suffix of suffixes) {
+      const file = join(dir, name + suffix)
+      try {
+        await access(file, constants.X_OK)
+        return file
+      } catch {}
+    }
+}
+
 function parseCommand(args: string[]): Command {
   const [one, two, ...more] = args // subcommand, target (url/folder/wtv), more is unused rn
   if (!one) return { type: 'open-terminal', cwd }
+  else if (one === 'agent') {
+    const target = two ? resolve(cwd, two) : cwd
+    return { type: 'open-agent', cwd: target }
+  }
   else if (one === 'edit') {
     if (!two) throw new Error('usage: osm edit <file>')
     return { type: 'open-editor', path: resolve(cwd, two), cwd }
@@ -37,6 +56,14 @@ async function ensureBuild() {
 async function launch() {
   const exe = await findExecutable()
   if (!exe) throw new Error('executable not found after build')
+  const codex = process.env.CODEX ?? await resolveCommand('codex')
+  const node = process.env.NODE ?? await resolveCommand('node')
+  const path = [
+    dirname(process.execPath),
+    codex && dirname(codex),
+    node && dirname(node),
+    process.env.PATH,
+  ].filter(Boolean).join(delimiter)
 
   const macOS = join(OSM, '.native-run', 'Osmium.app', 'Contents', 'MacOS')
   const bundled = join(macOS, 'OsmiumApp')
@@ -48,7 +75,18 @@ async function launch() {
   
   await writeFile(join(OSM, '.native-run/Osmium.app/Contents/Info.plist'), await Bun.file(join(OSM, 'src/plist.xml')).text())
 
-  const child = spawn(bundled, [], { cwd: OSM, detached: true, stdio: 'ignore' })
+  const child = spawn(bundled, [], {
+    cwd: OSM,
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      PATH: path,
+      BUN: process.execPath,
+      ...(codex ? { CODEX: codex } : {}),
+      ...(node ? { NODE: node } : {}),
+    },
+  })
   child.unref()
 }
 

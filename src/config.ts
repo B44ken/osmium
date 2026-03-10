@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const std = {
-    options: { font: 15, font_face: 'SF Mono' },
+    options: { font: 15, font_face: 'SF Mono', agent_font_face: 'Helvetica Neue' },
     binds: {
         show_tabs: 'opt',
         tab_up: 'opt [',
