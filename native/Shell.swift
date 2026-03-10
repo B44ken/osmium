@@ -181,8 +181,12 @@ final class App: NSObject, NSApplicationDelegate {
         let mc = MainController()
         controller = mc
         let v = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1512, height: 982)
-        let ww = min(max(v.width * 0.86, 1180), 1680)
-        let hh = min(max(v.height * 0.88, 760), 1120)
+        let minWidth = min(cfg.windowMinWidth, cfg.windowMaxWidth)
+        let maxWidth = max(cfg.windowMinWidth, cfg.windowMaxWidth)
+        let minHeight = min(cfg.windowMinHeight, cfg.windowMaxHeight)
+        let maxHeight = max(cfg.windowMinHeight, cfg.windowMaxHeight)
+        let ww = min(max(v.width * 0.86, minWidth), maxWidth)
+        let hh = min(max(v.height * 0.88, minHeight), maxHeight)
         let w = ShellWindow(
             contentRect: NSRect(x: v.midX - ww / 2, y: v.midY - hh / 2, width: ww, height: hh),
             styleMask: [.borderless, .resizable, .miniaturizable, .fullSizeContentView],
@@ -195,7 +199,8 @@ final class App: NSObject, NSApplicationDelegate {
         w.titlebarAppearsTransparent = true
         w.isMovableByWindowBackground = false
         w.collectionBehavior = [.fullScreenNone]
-        w.minSize = NSSize(width: 1180, height: 760)
+        w.minSize = NSSize(width: minWidth, height: minHeight)
+        w.maxSize = NSSize(width: maxWidth, height: maxHeight)
         w.contentViewController = mc
         w.center()
         w.makeKeyAndOrderFront(nil)

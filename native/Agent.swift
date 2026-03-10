@@ -13,12 +13,39 @@ struct AgentBridgeEvent: Decodable {
     let detail: String?
     let lines: [String]?
     let models: [AgentBridgeModel]?
+    let threads: [AgentThreadSummary]?
+    let thread: AgentThreadSnapshot?
 }
 
 struct AgentBridgeModel: Decodable {
     let model: String
     let displayName: String
     let isDefault: Bool
+}
+
+struct AgentThreadSummary: Decodable, Equatable {
+    let threadId: String
+    let cwd: String
+    let title: String
+    let preview: String
+    let updatedAt: TimeInterval
+}
+
+struct AgentThreadSnapshot: Decodable {
+    let threadId: String
+    let cwd: String
+    let title: String
+    let items: [AgentThreadSnapshotItem]
+}
+
+struct AgentThreadSnapshotItem: Decodable {
+    let kind: String
+    let tone: String?
+    let activity: String?
+    let title: String?
+    let detail: String?
+    let text: String?
+    let lines: [String]?
 }
 
 enum AgentMessageTone: Equatable {
@@ -86,7 +113,7 @@ struct AgentModelOption: Equatable {
 
 extension Cfg {
     func mono(_ size: CGFloat, _ weight: NSFont.Weight = .regular) -> NSFont {
-        let n = string("options.font_face")
+        let n = string("options.font_mono")
         return NSFont(name: n, size: size) ?? .monospacedSystemFont(ofSize: size, weight: weight)
     }
 }

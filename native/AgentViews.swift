@@ -1,13 +1,22 @@
 import AppKit
 import Foundation
+import OsmiumPickerSupport
 
 final class AgentMessageView: NSView {
+    private let contentView = NSView()
+    private let bubbleView = NSVisualEffectView()
     private let textLabel = NSTextField(wrappingLabelWithString: "")
     private var currentText = ""
     private var currentTone: AgentMessageTone
     private let messageEmphasized: Bool
+    private var textLeadingConstraint: NSLayoutConstraint?
+    private var textTrailingConstraint: NSLayoutConstraint?
+    private var textTopConstraint: NSLayoutConstraint?
+    private var textBottomConstraint: NSLayoutConstraint?
 
     var text: String { currentText }
+    var prefersTrailingAlignment: Bool { currentTone == .user }
+    var maxWidthMultiplier: CGFloat { currentTone == .user ? 0.84 : 0.96 }
 
     init(text: String, tone: AgentMessageTone, emphasized: Bool = false) {
         currentTone = tone
@@ -15,18 +24,48 @@ final class AgentMessageView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(contentView)
+
+        bubbleView.translatesAutoresizingMaskIntoConstraints = false
+        bubbleView.glass(
+            .selection,
+            radius: 12,
+            border: cfg.color("theme.panel_border").withAlphaComponent(0.55),
+            bg: NSColor.white.withAlphaComponent(0.04)
+        )
+        contentView.addSubview(bubbleView)
+
         textLabel.translatesAutoresizingMaskIntoConstraints = false
         textLabel.maximumNumberOfLines = 0
         textLabel.lineBreakMode = .byWordWrapping
-        addSubview(textLabel)
+        textLabel.allowsDefaultTighteningForTruncation = false
+        contentView.addSubview(textLabel)
 
         NSLayoutConstraint.activate([
-            textLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
-            textLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
-            textLabel.topAnchor.constraint(equalTo: topAnchor),
-            textLabel.bottomAnchor.constraint(equalTo: bottomAnchor),
+            contentView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            contentView.topAnchor.constraint(equalTo: topAnchor),
+            contentView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            bubbleView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            bubbleView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            bubbleView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            bubbleView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
         ])
 
+        textLeadingConstraint = textLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor)
+        textTrailingConstraint = textLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor)
+        textTopConstraint = textLabel.topAnchor.constraint(equalTo: contentView.topAnchor)
+        textBottomConstraint = textLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        NSLayoutConstraint.activate([
+            textLeadingConstraint!,
+            textTrailingConstraint!,
+            textTopConstraint!,
+            textBottomConstraint!,
+        ])
+
+        applyToneStyling()
         setText(text)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -43,14 +82,22 @@ final class AgentMessageView: NSView {
 
     func setTone(_ tone: AgentMessageTone) {
         currentTone = tone
+        applyToneStyling()
         textLabel.attributedStringValue = attributed(text: currentText)
     }
 
-    private func attributed(text: String) -> NSAttributedString {
-        let style = NSMutableParagraphStyle()
-        style.lineSpacing = 5
-        style.paragraphSpacing = 6
+    private func applyToneStyling() {
+        let showsBubble = currentTone == .user
+        bubbleView.alphaValue = showsBubble ? 1 : 0
+        bubbleView.layer?.borderWidth = showsBubble ? 1 : 0
+        bubbleView.layer?.backgroundColor = showsBubble ? NSColor.white.withAlphaComponent(0.04).cgColor : NSColor.clear.cgColor
+        textLeadingConstraint?.constant = showsBubble ? 12 : 0
+        textTrailingConstraint?.constant = showsBubble ? -12 : 0
+        textTopConstraint?.constant = showsBubble ? 9 : 0
+        textBottomConstraint?.constant = showsBubble ? -9 : 0
+    }
 
+    private func attributed(text: String) -> NSAttributedString {
         let color: NSColor
         switch currentTone {
         case .assistant:
@@ -63,11 +110,106 @@ final class AgentMessageView: NSView {
             color = appColor("ff8b8b")
         }
 
-        return NSAttributedString(string: text, attributes: [
-            .font: cfg.agentFont(size: messageEmphasized ? 17 : 15, weight: messageEmphasized ? .semibold : .regular),
+        let baseSize = messageEmphasized ? CGFloat(17) : CGFloat(15)
+        if currentTone == .user {
+            return NSAttributedString(string: text, attributes: baseAttributes(size: baseSize, weight: messageEmphasized ? .semibold : .regular, color: color))
+        }
+
+        let blocks = agentMarkdownBlocks(from: text)
+        guard !blocks.isEmpty else {
+            return NSAttributedString(string: text, attributes: baseAttributes(size: baseSize, weight: messageEmphasized ? .semibold : .regular, color: color))
+        }
+
+        let output = NSMutableAttributedString()
+        for (index, block) in blocks.enumerated() {
+            if index > 0 {
+                output.append(NSAttributedString(string: "\n\n", attributes: baseAttributes(size: baseSize, color: color)))
+            }
+
+            switch block {
+            case .paragraph(let inlines):
+                output.append(render(inlines: inlines, size: baseSize, color: color, weight: messageEmphasized ? .semibold : .regular))
+            case .heading(let level, let inlines):
+                output.append(render(inlines: inlines, size: headingSize(for: level, baseSize: baseSize), color: color, weight: .semibold, lineSpacing: 4))
+            case .codeBlock(let code):
+                output.append(renderCodeBlock(code, baseSize: baseSize, color: color))
+            }
+        }
+
+        return output
+    }
+
+    private func baseAttributes(
+        size: CGFloat,
+        weight: NSFont.Weight = .regular,
+        color: NSColor,
+        lineSpacing: CGFloat = 5
+    ) -> [NSAttributedString.Key: Any] {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = lineSpacing
+        style.paragraphSpacing = 0
+        return [
+            .font: cfg.agentFont(size: size, weight: weight),
             .foregroundColor: color,
             .paragraphStyle: style,
+        ]
+    }
+
+    private func render(
+        inlines: [AgentMarkdownInline],
+        size: CGFloat,
+        color: NSColor,
+        weight: NSFont.Weight,
+        lineSpacing: CGFloat = 5
+    ) -> NSAttributedString {
+        let output = NSMutableAttributedString()
+        for inline in inlines {
+            switch inline {
+            case .text(let value):
+                output.append(NSAttributedString(string: value, attributes: baseAttributes(size: size, weight: weight, color: color, lineSpacing: lineSpacing)))
+            case .bold(let value):
+                output.append(NSAttributedString(string: value, attributes: baseAttributes(size: size, weight: .semibold, color: color, lineSpacing: lineSpacing)))
+            case .code(let value):
+                let style = NSMutableParagraphStyle()
+                style.lineSpacing = lineSpacing
+                style.paragraphSpacing = 0
+                output.append(NSAttributedString(string: value, attributes: [
+                    .font: cfg.font(size: max(size - 1, 13), weight: .regular),
+                    .foregroundColor: color.withAlphaComponent(0.96),
+                    .backgroundColor: NSColor.white.withAlphaComponent(0.08),
+                    .paragraphStyle: style,
+                ]))
+            }
+        }
+        return output
+    }
+
+    private func renderCodeBlock(_ code: String, baseSize: CGFloat, color: NSColor) -> NSAttributedString {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 3
+        style.paragraphSpacing = 0
+        style.headIndent = 10
+        style.firstLineHeadIndent = 10
+
+        let lines = code.split(separator: "\n", omittingEmptySubsequences: false).map { "  \($0)" }
+        let rendered = lines.joined(separator: "\n")
+        return NSAttributedString(string: rendered, attributes: [
+            .font: cfg.font(size: max(baseSize - 1, 13), weight: .regular),
+            .foregroundColor: color.withAlphaComponent(0.95),
+            .backgroundColor: NSColor.white.withAlphaComponent(0.06),
+            .paragraphStyle: style,
         ])
+    }
+
+    private func headingSize(for level: Int, baseSize: CGFloat) -> CGFloat {
+        switch level {
+        case 1:
+            return baseSize * 1.5
+        case 2:
+            return baseSize * 1.32
+        default:
+            return baseSize * 1.16
+        }
     }
 }
 

@@ -36,23 +36,36 @@ class Surface: NSViewController {
     }
 }
 
+final class TrackingTerminalView: LocalProcessTerminalView {
+    var onHostOutput: (() -> Void)?
+
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        super.dataReceived(slice: slice)
+        onHostOutput?()
+    }
+}
+
 final class TerminalSurface: Surface, @preconcurrency LocalProcessTerminalViewDelegate {
-    private let terminalView = LocalProcessTerminalView(frame: .zero)
+    private let terminalView = TrackingTerminalView(frame: .zero)
     private let initialDirectory: String
     private var currentDirectory: String
-    private var terminalTitle: String?
     private var started = false
+    private var pendingCommands: [String] = []
+    private var refreshWorkItem: DispatchWorkItem?
 
     override var titleText: String {
-        let fallback = URL(fileURLWithPath: currentDirectory).lastPathComponent.ifEmpty(currentDirectory)
-        return terminalTitle?.ifEmpty(fallback) ?? fallback
+        URL(fileURLWithPath: currentDirectory).lastPathComponent.ifEmpty(currentDirectory)
     }
     override var preferredFirstResponder: NSResponder? { terminalView }
     var cwd: String { currentDirectory }
+    func resolvedWorkingDirectory() -> String { refreshWorkingDirectoryFromProcess() ?? currentDirectory }
 
-    init(cwd: String) {
+    init(cwd: String, initialCommand: String? = nil) {
         initialDirectory = cwd
         currentDirectory = cwd
+        if let initialCommand {
+            pendingCommands = [initialCommand]
+        }
         super.init(kindPrefix: "T")
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -60,6 +73,9 @@ final class TerminalSurface: Surface, @preconcurrency LocalProcessTerminalViewDe
     override func loadView() {
         let root = makeRoot()
         terminalView.processDelegate = self
+        terminalView.onHostOutput = { [weak self] in
+            self?.scheduleProcessStateRefresh()
+        }
         terminalView.optionAsMetaKey = true
         terminalView.nativeForegroundColor = cfg.color("theme.terminal_foreground")
         terminalView.nativeBackgroundColor = cfg.color("theme.terminal_bg")
@@ -81,16 +97,26 @@ final class TerminalSurface: Surface, @preconcurrency LocalProcessTerminalViewDe
                 execName: "-\(URL(fileURLWithPath: shell).lastPathComponent)",
                 currentDirectory: initialDirectory
             )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.flushPendingCommands()
+            }
+        } else {
+            flushPendingCommands()
         }
         window?.makeFirstResponder(terminalView)
     }
 
+    func run(command: String) {
+        pendingCommands.append(command)
+        if started {
+            flushPendingCommands()
+        }
+    }
+
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
 
-    func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        terminalTitle = trimmed.isEmpty ? nil : trimmed
-        onStateChange?()
+    func setTerminalTitle(source: LocalProcessTerminalView, title _: String) {
+        scheduleProcessStateRefresh()
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
@@ -104,6 +130,67 @@ final class TerminalSurface: Surface, @preconcurrency LocalProcessTerminalViewDe
         DispatchQueue.main.async { [weak self] in
             self?.onRequestClose?(msg)
         }
+    }
+
+    private func flushPendingCommands() {
+        guard started, !pendingCommands.isEmpty else { return }
+        let commands = pendingCommands
+        pendingCommands.removeAll()
+        for command in commands {
+            terminalView.send(txt: command)
+            terminalView.send(txt: "\n")
+        }
+        scheduleProcessStateRefresh()
+    }
+
+    private func scheduleProcessStateRefresh() {
+        guard started else { return }
+        refreshWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            _ = self?.refreshWorkingDirectoryFromProcess()
+        }
+        refreshWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: workItem)
+    }
+
+    @discardableResult
+    private func refreshWorkingDirectoryFromProcess() -> String? {
+        guard started else { return currentDirectory }
+        let pid = terminalView.process.shellPid
+        guard pid > 0 else { return currentDirectory }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-a", "-d", "cwd", "-p", String(pid), "-Fn"]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else { return nil }
+
+        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let directory = output
+            .split(separator: "\n")
+            .compactMap { line -> String? in
+                guard line.first == "n" else { return nil }
+                let value = String(line.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+                return value.isEmpty ? nil : value
+            }
+            .first
+
+        guard let directory else { return nil }
+        if currentDirectory != directory {
+            currentDirectory = directory
+            onStateChange?()
+        }
+        return directory
     }
 }
 
@@ -242,7 +329,7 @@ final class BrowserSurface: Surface, WKNavigationDelegate {
         webView.setValue(false, forKey: "drawsBackground")
         root.addSubview(webView)
         webView.pin(to: root)
-        webView.load(URLRequest(url: currentURL))
+        loadCurrentURL()
     }
 
     override func activate(in window: NSWindow?) {
@@ -254,5 +341,16 @@ final class BrowserSurface: Surface, WKNavigationDelegate {
             currentURL = url
             onStateChange?()
         }
+    }
+
+    private func loadCurrentURL() {
+        if currentURL.isFileURL {
+            let accessURL = currentURL.hasDirectoryPath
+                ? currentURL
+                : currentURL.deletingLastPathComponent()
+            webView.loadFileURL(currentURL, allowingReadAccessTo: accessURL)
+            return
+        }
+        webView.load(URLRequest(url: currentURL))
     }
 }

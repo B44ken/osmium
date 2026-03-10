@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 import { spawn, spawnSync } from 'node:child_process'
-import { constants } from 'node:fs'
+import { accessSync, constants } from 'node:fs'
 import { access, mkdir, writeFile, symlink, rm } from 'node:fs/promises'
 import { delimiter, dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ensureOsmDir, sendCommand, waitForSocket } from './ipc.ts'
 import { readConfig, writeConfigFlat } from './config.ts'
 import type { Command } from './protocol.ts'
@@ -38,11 +38,27 @@ function parseCommand(args: string[]): Command {
     return { type: 'open-editor', path: resolve(cwd, two), cwd }
   } else if (one === 'web') {
     if (!two) throw new Error('usage: osm web <url>')
-    return { type: 'open-browser', url: 'https://' + two.split('://').pop(), cwd }
+    return { type: 'open-browser', url: normalizeWebTarget(two), cwd }
   } else if (one === 'bind') {
     if (!two || !more[0]) throw new Error('usage: osm bind <event> <command>')
     return { type: 'add-bind', event: two, command: more[0], cwd }
   } else throw new Error(`unknown subcommand: ${one}`)
+}
+
+function normalizeWebTarget(target: string): string {
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(target))
+    return target
+
+  const resolved = resolve(cwd, target)
+  const looksLikePath = target.startsWith('/') || target.startsWith('./') || target.startsWith('../')
+  try {
+    accessSync(resolved)
+    return pathToFileURL(resolved).href
+  } catch {
+    if (looksLikePath)
+      return pathToFileURL(resolved).href
+    return 'https://' + target
+  }
 }
 
 const findExecutable = async (which='debug') => join(OSM + '/native/.build/' + which + '/Osmium')

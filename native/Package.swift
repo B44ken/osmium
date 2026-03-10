@@ -12,10 +12,20 @@ let package = Package(
     .package(path: "../.deps/SwiftTerm")
   ],
   targets: [
+    .target(
+      name: "OsmiumPickerSupport",
+      path: "PickerSupport"
+    ),
     .executableTarget(
       name: "Osmium",
-      dependencies: ["CodeEditLanguages", "CodeEditSourceEditor", "CodeEditTextView", "SwiftTerm"],
-      path: "./"
+      dependencies: ["CodeEditLanguages", "CodeEditSourceEditor", "CodeEditTextView", "SwiftTerm", "OsmiumPickerSupport"],
+      path: "./",
+      exclude: ["Tests", "PickerSupport"]
+    ),
+    .executableTarget(
+      name: "OsmiumPickerTests",
+      dependencies: ["OsmiumPickerSupport"],
+      path: "Tests/OsmiumPickerTests"
     )
   ]
 )

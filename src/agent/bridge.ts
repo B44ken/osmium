@@ -1,7 +1,34 @@
-import { ChatGPTClient, type ChatGPTModelOption, type ChatGPTReasoningEffort } from './chatgpt.ts'
+import {
+    ChatGPTClient,
+    type ChatGPTModelOption,
+    type ChatGPTReasoningEffort,
+    type ChatGPTRecentThread,
+    type ChatGPTThreadSnapshot,
+} from './chatgpt.ts'
+
+type BridgeRecentThread = {
+    threadId: string
+    cwd: string
+    title: string
+    preview: string
+    updatedAt: number
+}
+
+type BridgeFeedItem =
+    | { kind: 'message'; tone: 'assistant' | 'user' | 'status' | 'error'; text: string }
+    | { kind: 'activity'; activity: 'trace' | 'edit'; title: string; detail?: string; text?: string; lines?: string[] }
+
+type BridgeThreadSnapshot = {
+    threadId: string
+    cwd: string
+    title: string
+    items: BridgeFeedItem[]
+}
 
 type BridgeEvent =
     | { type: 'models'; models: ChatGPTModelOption[] }
+    | { type: 'threads'; threads: BridgeRecentThread[] }
+    | { type: 'thread'; thread: BridgeThreadSnapshot }
     | { type: 'thread.started'; threadId: string }
     | { type: 'thread.resumed'; threadId: string }
     | { type: 'turn.started'; threadId: string; turnId: string }
@@ -11,7 +38,11 @@ type BridgeEvent =
     | { type: 'completed'; threadId: string; turnId: string; text: string; error?: string }
     | { type: 'error'; message: string }
 
-type ParsedArgs = { mode: 'chat', cwd: string, prompt: string, threadId?: string, effort?: ChatGPTReasoningEffort, model?: string } | { mode: 'models', cwd: string }
+type ParsedArgs =
+    | { mode: 'chat', cwd: string, prompt: string, threadId?: string, effort?: ChatGPTReasoningEffort, model?: string }
+    | { mode: 'models', cwd: string }
+    | { mode: 'threads', cwd: string }
+    | { mode: 'thread', cwd: string, threadId: string }
 
 function parseArgs(argv: string[]): ParsedArgs {
     let cwd = process.cwd()
@@ -39,11 +70,25 @@ function parseArgs(argv: string[]): ParsedArgs {
             else throw new Error(`effort (${value}) should be low/medium/high/xhigh`)
         } else if (arg == '--list-models') {
             mode = 'models'
+        } else if (arg == '--list-threads') {
+            mode = 'threads'
+        } else if (arg == '--read-thread') {
+            threadId = argv[++i] ?? undefined
+            mode = 'thread'
         } else throw new Error(`unknown argument: ${arg}`)
     }
 
     if (mode == 'models')
         return { mode: 'models', cwd }
+
+    if (mode == 'threads')
+        return { mode: 'threads', cwd }
+
+    if (mode == 'thread') {
+        if (!threadId)
+            throw new Error('missing required --read-thread <threadId>')
+        return { mode: 'thread', cwd, threadId }
+    }
 
     if (!prompt.trim())
         throw new Error('missing required --prompt')
@@ -124,58 +169,95 @@ function detailLine(parts: Array<string | undefined>): string | undefined {
     return line || undefined
 }
 
-function bridgeItemEvent(threadId: string, turnId: string, item: unknown): BridgeEvent | null {
+function basename(path: string): string {
+    const pieces = path.split('/').filter(Boolean)
+    return pieces.at(-1) ?? path
+}
+
+function threadTitle(name: string | null | undefined, preview: string | undefined, cwd: string): string {
+    const trimmedName = stringValue(name)
+    if (trimmedName) return trimmedName
+    const firstPreviewLine = preview
+        ?.split('\n')
+        .map(line => line.trim())
+        .find(Boolean)
+    return truncate(firstPreviewLine, 80) ?? basename(cwd)
+}
+
+function userInputText(value: unknown): string | undefined {
+    if (!Array.isArray(value)) return undefined
+    const text = value
+        .map(part => recordValue(part))
+        .flatMap(part => {
+            switch (part?.type) {
+                case 'text':
+                    return [stringValue(part.text)]
+                case 'image':
+                    return ['[image]']
+                case 'localImage':
+                case 'local_image':
+                    return ['[image]']
+                case 'skill':
+                    return [part.name ? `$${String(part.name)}` : '$skill']
+                case 'mention':
+                    return [part.name ? `@${String(part.name)}` : '@mention']
+                default:
+                    return []
+            }
+        })
+        .filter((part): part is string => !!part)
+        .join('\n')
+        .trim()
+    return text || undefined
+}
+
+function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
     const entry = recordValue(item)
     const type = stringValue(entry?.type)
     if (!entry || !type) return null
 
     switch (type) {
+        case 'userMessage': {
+            const text = userInputText(entry.content)
+            return text ? { kind: 'message', tone: 'user', text } : null
+        }
+        case 'agentMessage': {
+            const text = stringValue(entry.text)
+            return text ? { kind: 'message', tone: 'assistant', text } : null
+        }
         case 'reasoning': {
             const summary = stringArray(entry.summary).join('\n')
             const content = stringArray(entry.content).join('\n')
             const text = truncate(summary || content)
-            return text ? { type: 'trace', threadId, turnId, title: 'thinking', text } : null
+            return text ? { kind: 'activity', activity: 'trace', title: 'thinking', text } : null
         }
         case 'plan': {
             const text = truncate(stringValue(entry.text))
-            return text ? { type: 'trace', threadId, turnId, title: 'plan', text } : null
+            return text ? { kind: 'activity', activity: 'trace', title: 'plan', text } : null
         }
         case 'commandExecution': {
             const command = stringValue(entry.command) ?? 'command'
             return {
-                type: 'trace',
-                threadId,
-                turnId,
-                title: command,
+                kind: 'activity',
+                activity: 'trace',
+                title: 'command',
                 detail: detailLine([
                     statusLabel(entry.status),
                     formatDuration(numberValue(entry.durationMs)),
                     stringValue(entry.cwd),
                 ]),
+                text: truncate(command, 420),
             }
         }
-        case 'webSearch': {
-            const query = stringValue(entry.query)
-            return query
-                ? {
-                    type: 'trace',
-                    threadId,
-                    turnId,
-                    title: 'web search',
-                    detail: statusLabel(entry.action),
-                    text: truncate(query, 260),
-                }
-                : null
-        }
         case 'mcpToolCall': {
-            const title = [stringValue(entry.server), stringValue(entry.tool)].filter(Boolean).join('/') || 'tool call'
+            const name = [stringValue(entry.server), stringValue(entry.tool)].filter(Boolean).join('/')
             const error = stringValue(recordValue(entry.error)?.message) ?? stringValue(entry.error)
             return {
-                type: 'trace',
-                threadId,
-                turnId,
-                title,
+                kind: 'activity',
+                activity: 'trace',
+                title: 'tool call',
                 detail: detailLine([
+                    name || undefined,
                     statusLabel(entry.status),
                     formatDuration(numberValue(entry.durationMs)),
                 ]),
@@ -183,13 +265,13 @@ function bridgeItemEvent(threadId: string, turnId: string, item: unknown): Bridg
             }
         }
         case 'dynamicToolCall': {
-            const title = stringValue(entry.tool) ?? 'tool call'
+            const tool = stringValue(entry.tool)
             return {
-                type: 'trace',
-                threadId,
-                turnId,
-                title,
+                kind: 'activity',
+                activity: 'trace',
+                title: 'tool call',
                 detail: detailLine([
+                    tool,
                     statusLabel(entry.status),
                     typeof entry.success == 'boolean' ? (entry.success ? 'ok' : 'failed') : undefined,
                     formatDuration(numberValue(entry.durationMs)),
@@ -197,13 +279,24 @@ function bridgeItemEvent(threadId: string, turnId: string, item: unknown): Bridg
                 text: truncate(contentItemText(entry.contentItems) ?? stringifyJson(entry.arguments)),
             }
         }
+        case 'webSearch': {
+            const query = stringValue(entry.query)
+            return query
+                ? {
+                    kind: 'activity',
+                    activity: 'trace',
+                    title: 'web search',
+                    detail: statusLabel(entry.action),
+                    text: truncate(query, 260),
+                }
+                : null
+        }
         case 'fileChange': {
             const lines = changeLines(entry.changes)
             if (!lines.length) return null
             return {
-                type: 'edit',
-                threadId,
-                turnId,
+                kind: 'activity',
+                activity: 'edit',
                 title: lines.length == 1 ? lines[0] : `${lines.length} files changed`,
                 detail: statusLabel(entry.status),
                 lines: lines.slice(0, 8),
@@ -214,13 +307,63 @@ function bridgeItemEvent(threadId: string, turnId: string, item: unknown): Bridg
     }
 }
 
+function bridgeItemEvent(threadId: string, turnId: string, item: unknown): BridgeEvent | null {
+    const normalized = bridgeFeedItem(item)
+    if (!normalized || normalized.kind != 'activity') return null
+    return normalized.activity == 'trace'
+        ? { type: 'trace', threadId, turnId, title: normalized.title, detail: normalized.detail, text: normalized.text, lines: normalized.lines }
+        : { type: 'edit', threadId, turnId, title: normalized.title, detail: normalized.detail, text: normalized.text, lines: normalized.lines }
+}
+
+function bridgeRecentThreads(threads: ChatGPTRecentThread[]): BridgeRecentThread[] {
+    return threads.map((thread) => ({
+        threadId: thread.threadId,
+        cwd: thread.cwd,
+        title: threadTitle(thread.name, thread.preview, thread.cwd),
+        preview: truncate(thread.preview, 140) ?? '',
+        updatedAt: thread.updatedAt,
+    }))
+}
+
+function bridgeThreadSnapshot(thread: ChatGPTThreadSnapshot): BridgeThreadSnapshot {
+    const items: BridgeFeedItem[] = []
+    for (const turn of thread.turns) {
+        for (const item of turn.items) {
+            const normalized = bridgeFeedItem(item)
+            if (normalized) items.push(normalized)
+        }
+        if (turn.status == 'failed' && turn.error) {
+            items.push({ kind: 'message', tone: 'error', text: turn.error })
+        } else if (turn.status == 'interrupted') {
+            items.push({ kind: 'message', tone: 'status', text: 'Stopped.' })
+        }
+    }
+
+    return {
+        threadId: thread.threadId,
+        cwd: thread.cwd,
+        title: threadTitle(thread.name, thread.preview, thread.cwd),
+        items,
+    }
+}
+
 async function main(): Promise<void> {
     const args = parseArgs(process.argv.slice(2))
-    const client = await ChatGPTClient.create({ cwd: args.cwd, codexPath: process.env.CODEX })
+    const client = await ChatGPTClient.create({ cwd: args.cwd, codexPath: process.env.CODEX, sandbox: 'workspace-write' })
 
     try {
         if (args.mode === 'models') {
             emit({ type: 'models', models: await client.listModels(9) })
+            return
+        }
+
+        if (args.mode === 'threads') {
+            emit({ type: 'threads', threads: bridgeRecentThreads(await client.listThreads(40)) })
+            return
+        }
+
+        if (args.mode === 'thread') {
+            emit({ type: 'thread', thread: bridgeThreadSnapshot(await client.readThread(args.threadId)) })
             return
         }
 

@@ -69,6 +69,10 @@ func animate(_ dur: Double = 0.15, body: @escaping @MainActor () -> Void) {
     }
 }
 
+func shellQuote(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+}
+
 struct AppCommand: Decodable, Sendable {
     let type: String
     let cwd: String?
@@ -85,6 +89,16 @@ struct SaveBind {
 
 final class Cfg: Sendable {
     static let shared = Cfg()
+    private static let aliases: [String: [String]] = [
+        "options.font_size": ["options.font"],
+        "options.font_mono": ["options.font_face"],
+        "options.font_sans": ["options.agent_font_face", "options.font_face"],
+        "theme.terminal_bg": ["theme.panel_bg"],
+        "theme.terminal_foreground": ["theme.editor_text", "theme.overlay_text"],
+        "theme.terminal_cursor": ["theme.terminal_foreground", "theme.editor_text"],
+        "theme.editor_cursor": ["theme.editor_text", "theme.terminal_foreground"],
+        "theme.editor_characters": ["theme.editor_strings"],
+    ]
     private let data: [String: String]
 
     init() {
@@ -99,39 +113,98 @@ final class Cfg: Sendable {
         data = d
     }
 
-    func string(_ key: String) -> String { data[key]! }
-    func float(_ key: String) -> CGFloat { CGFloat(Double(data[key]!)!) }
-    func color(_ key: String) -> NSColor { appColor(data[key]!) }
+    func string(_ key: String) -> String { resolvedValue(for: key)! }
+    func float(_ key: String) -> CGFloat { CGFloat(Double(resolvedValue(for: key)!)!) }
+    func color(_ key: String) -> NSColor { appColor(resolvedValue(for: key)!) }
+
+    private func resolvedValue(for key: String, visited: Set<String> = []) -> String? {
+        if let value = data[key] {
+            return value
+        }
+
+        guard !visited.contains(key) else { return nil }
+        let nextVisited = visited.union([key])
+        for alias in Self.aliases[key] ?? [] {
+            if let value = resolvedValue(for: alias, visited: nextVisited) {
+                return value
+            }
+        }
+        return nil
+    }
 }
 
 let cfg = Cfg.shared
 
 extension Cfg {
+    var fontSize: CGFloat {
+        float("options.font_size")
+    }
+
+    var monoFontName: String {
+        string("options.font_mono")
+    }
+
+    var sansFontName: String {
+        string("options.font_sans")
+    }
+
+    var tabsSlideDuration: Double {
+        Double(float("options.tabs_slide_ms")) / 1000
+    }
+
+    var tabsSlideDelay: Double {
+        Double(float("options.tabs_slide_delay")) / 1000
+    }
+
+    var windowMinWidth: CGFloat {
+        float("window.min_width")
+    }
+
+    var windowMinHeight: CGFloat {
+        float("window.min_height")
+    }
+
+    var windowMaxWidth: CGFloat {
+        float("window.max_width")
+    }
+
+    var windowMaxHeight: CGFloat {
+        float("window.max_height")
+    }
+
+    var tabsSidebarWidth: CGFloat {
+        float("window.tabs_width")
+    }
+
+    var pickerSidebarWidth: CGFloat {
+        tabsSidebarWidth + 20
+    }
+
     var font: NSFont {
-        let s = float("options.font")
-        let n = string("options.font_face")
+        let s = fontSize
+        let n = monoFontName
         return NSFont(name: n, size: s) ?? .monospacedSystemFont(ofSize: s, weight: .regular)
     }
 
     func font(_ w: NSFont.Weight) -> NSFont {
-        let s = float("options.font")
-        let n = string("options.font_face")
+        let s = fontSize
+        let n = monoFontName
         return NSFont(name: n, size: s) ?? .monospacedSystemFont(ofSize: s, weight: w)
     }
 
     func font(size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
-        let n = string("options.font_face")
+        let n = monoFontName
         return NSFont(name: n, size: size) ?? .monospacedSystemFont(ofSize: size, weight: weight)
     }
 
     var agentFont: NSFont {
-        let s = float("options.font")
-        let n = data["options.agent_font_face"] ?? data["options.font_face"] ?? "Helvetica Neue"
+        let s = fontSize
+        let n = sansFontName
         return NSFont(name: n, size: s) ?? .systemFont(ofSize: s, weight: .regular)
     }
 
     func agentFont(size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
-        let n = data["options.agent_font_face"] ?? data["options.font_face"] ?? "Helvetica Neue"
+        let n = sansFontName
         return NSFont(name: n, size: size) ?? .systemFont(ofSize: size, weight: weight)
     }
 

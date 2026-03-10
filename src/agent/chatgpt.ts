@@ -27,6 +27,24 @@ type CodexModel = {
     isDefault: boolean
 }
 type CodexModelListResponse = { data: CodexModel[] }
+type CodexThreadSummary = {
+    id: string
+    preview: string
+    updatedAt: number
+    cwd: string
+    name: string | null
+}
+type CodexThreadListResponse = { data: CodexThreadSummary[]; nextCursor: string | null }
+type CodexThreadReadResponse = {
+    thread: CodexThreadSummary & {
+        turns: Array<{
+            id: string
+            items: CodexThreadItem[]
+            status: ChatGPTTurnStatus
+            error: null | { message: string }
+        }>
+    }
+}
 
 type CodexThreadStartResponse = { thread: { id: string } }
 type CodexThreadResumeResponse = { thread: { id: string } }
@@ -114,6 +132,27 @@ export type ChatGPTModelOption = {
     isDefault: boolean
 }
 
+export type ChatGPTRecentThread = {
+    threadId: string
+    cwd: string
+    name: string | null
+    preview: string
+    updatedAt: number
+}
+
+export type ChatGPTThreadSnapshot = {
+    threadId: string
+    cwd: string
+    name: string | null
+    preview: string
+    turns: Array<{
+        id: string
+        items: ChatGPTThreadItem[]
+        status: ChatGPTTurnStatus
+        error?: string
+    }>
+}
+
 export type ChatGPTClientOptions = {
     codexPath?: string
     cwd?: string
@@ -141,7 +180,7 @@ export class ChatGPTClient {
     private currentThreadId: string | null = null
     private activeTurn = false
 
-    private constructor(transport: AppServerTransport, defaultCwd: string, defaultModel?: string, approvalPolicy: ApprovalPolicy = 'never', sandbox: SandboxMode = 'read-only') {
+    private constructor(transport: AppServerTransport, defaultCwd: string, defaultModel?: string, approvalPolicy: ApprovalPolicy = 'never', sandbox: SandboxMode = 'workspace-write') {
         this.transport = transport
         this.defaultCwd = defaultCwd
         this.defaultModel = defaultModel
@@ -178,7 +217,7 @@ export class ChatGPTClient {
                 cwd,
                 options.model,
                 options.approvalPolicy ?? 'never',
-                options.sandbox ?? 'read-only',
+                options.sandbox ?? 'workspace-write',
             )
         } catch (error) {
             await transport.close()
@@ -198,6 +237,41 @@ export class ChatGPTClient {
                 displayName: model.displayName,
                 isDefault: model.isDefault,
             }))
+    }
+
+    async listThreads(limit = 40): Promise<ChatGPTRecentThread[]> {
+        const response = await this.transport.request<CodexThreadListResponse>('thread/list', {
+            limit,
+            sortKey: 'updated_at',
+            archived: false,
+        })
+        return response.data.map((thread) => ({
+            threadId: thread.id,
+            cwd: thread.cwd,
+            name: thread.name,
+            preview: thread.preview,
+            updatedAt: thread.updatedAt,
+        }))
+    }
+
+    async readThread(threadId: string): Promise<ChatGPTThreadSnapshot> {
+        const response = await this.transport.request<CodexThreadReadResponse>('thread/read', {
+            threadId,
+            includeTurns: true,
+        })
+        const thread = response.thread
+        return {
+            threadId: thread.id,
+            cwd: thread.cwd,
+            name: thread.name,
+            preview: thread.preview,
+            turns: thread.turns.map((turn) => ({
+                id: turn.id,
+                items: turn.items,
+                status: turn.status,
+                error: turn.error?.message,
+            })),
+        }
     }
 
     async *stream(input: ChatGPTInput, options: ChatGPTRunOptions = {}): AsyncGenerator<ChatGPTStreamEvent> {

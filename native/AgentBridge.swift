@@ -16,6 +16,22 @@ private final class AgentModelLoadCallback: @unchecked Sendable {
     }
 }
 
+private final class AgentThreadsLoadCallback: @unchecked Sendable {
+    let run: ([AgentThreadSummary]) -> Void
+
+    init(_ run: @escaping ([AgentThreadSummary]) -> Void) {
+        self.run = run
+    }
+}
+
+private final class AgentThreadLoadCallback: @unchecked Sendable {
+    let run: (AgentThreadSnapshot?) -> Void
+
+    init(_ run: @escaping (AgentThreadSnapshot?) -> Void) {
+        self.run = run
+    }
+}
+
 enum AgentBridge {
     static let root = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -50,6 +66,82 @@ enum AgentBridge {
 
             OperationQueue.main.addOperation {
                 callback.run(Array(options))
+            }
+        }
+    }
+
+    static func loadRecentThreads(cwd: String, completion: @escaping ([AgentThreadSummary]) -> Void) {
+        let callback = AgentThreadsLoadCallback(completion)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = makeProcess(arguments: ["--cwd", cwd, "--list-threads"])
+            let stdout = Pipe()
+            process.standardOutput = stdout
+            process.standardError = Pipe()
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                OperationQueue.main.addOperation {
+                    callback.run([])
+                }
+                return
+            }
+
+            guard process.terminationStatus == 0 else {
+                OperationQueue.main.addOperation {
+                    callback.run([])
+                }
+                return
+            }
+
+            let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let threads = decodeEvents(output)
+                .compactMap(\.threads)
+                .flatMap { $0 }
+
+            OperationQueue.main.addOperation {
+                callback.run(threads)
+            }
+        }
+    }
+
+    static func loadThreadSnapshot(
+        cwd: String,
+        threadId: String,
+        completion: @escaping (AgentThreadSnapshot?) -> Void
+    ) {
+        let callback = AgentThreadLoadCallback(completion)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = makeProcess(arguments: ["--cwd", cwd, "--read-thread", threadId])
+            let stdout = Pipe()
+            process.standardOutput = stdout
+            process.standardError = Pipe()
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                OperationQueue.main.addOperation {
+                    callback.run(nil)
+                }
+                return
+            }
+
+            guard process.terminationStatus == 0 else {
+                OperationQueue.main.addOperation {
+                    callback.run(nil)
+                }
+                return
+            }
+
+            let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let thread = decodeEvents(output)
+                .compactMap(\.thread)
+                .first
+
+            OperationQueue.main.addOperation {
+                callback.run(thread)
             }
         }
     }

@@ -1,23 +1,28 @@
 import AppKit
 import Foundation
+import OsmiumPickerSupport
 
 final class MainController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    private enum SidebarState {
+        case hidden
+        case tabsPeek
+        case picker
+    }
+
     private var tabs: [Surface] = []
     private var selectedTabID: UUID?
     private var saveBinds: [SaveBind] = []
-    private var sidebarShown = false
+    private var sidebarState: SidebarState = .hidden
     private var paletteVisible = false
     private var displayedSurfaceID: UUID?
     private var currentPanel: GlassPanel?
 
     private let ci: CGFloat = 8
-    private let sidebarExpanded: CGFloat = 216
-    private let sidebarCollapsed: CGFloat = 84
 
     private let windowGlass = NSVisualEffectView()
     private let contentContainer = NSView()
     private let sidebar = NSVisualEffectView()
-    private let tableView = NSTableView()
+    private let tableView = SidebarTableView()
     private let sidebarScroll = NSScrollView()
     private let palette = NSVisualEffectView()
     private var sidebarLeading: NSLayoutConstraint?
@@ -25,6 +30,14 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
     private var center: NSLayoutConstraint?
 
     private var syncingSelection = false
+    private var pendingTabsPeek: DispatchWorkItem?
+
+    private var pickerMode: SidebarPickerMode?
+    private var pickerBaseEntries: [SidebarPickerEntry] = []
+    private var pickerEntries: [SidebarPickerEntry] = []
+    private var pickerQuery = ""
+    private var pickerSelectionIndex = -1
+    private var pickerLoadGeneration = 0
 
     var hasTabs: Bool { !tabs.isEmpty }
 
@@ -63,19 +76,74 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
     }
 
     func handleModifierFlags(_ flags: NSEvent.ModifierFlags) {
-        showSidebar(flags.intersection([.shift, .control, .option, .command]) == .option)
+        let optionOnly = flags.intersection([.shift, .control, .option, .command]) == .option
+        guard sidebarState != .picker else {
+            if !optionOnly {
+                cancelPendingTabsPeek()
+            }
+            return
+        }
+
+        if optionOnly {
+            scheduleTabsPeek()
+        } else {
+            cancelPendingTabsPeek()
+            if sidebarState == .tabsPeek {
+                setSidebarState(.hidden)
+            }
+        }
     }
 
     func handleShortcut(event: NSEvent) -> Bool {
         let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
-        if mods == .control && key == "q" || mods == .command && key == "q" { NSApp.terminate(nil); return true }
-        if paletteVisible { return handlePaletteKey(key) }
-        if mods == .command && key == "t" { presentPalette(); return true }
-        if mods == .command && key == "w" { closeSelectedTab(); return true }
-        if mods == .command && key == "s" { saveEditor(); return true }
-        if mods == .option && key == "[" { cycleTabs(-1); return true }
-        if mods == .option && key == "]" { cycleTabs(1); return true }
+
+        if mods == .control && key == "q" || mods == .command && key == "q" {
+            NSApp.terminate(nil)
+            return true
+        }
+
+        if (mods == .option || mods == .command) && key == "p" {
+            if paletteVisible {
+                dismissPalette()
+            }
+            togglePicker()
+            return true
+        }
+
+        if mods == .option && key == "[" {
+            cycleTabs(-1)
+            return true
+        }
+
+        if mods == .option && key == "]" {
+            cycleTabs(1)
+            return true
+        }
+
+        if paletteVisible {
+            return handlePaletteKey(key)
+        }
+
+        if mods == .command && key == "t" {
+            presentPalette()
+            return true
+        }
+
+        if mods == .command && key == "w" {
+            closeSelectedTab()
+            return true
+        }
+
+        if mods == .command && key == "s" {
+            saveEditor()
+            return true
+        }
+
+        if sidebarState == .picker {
+            return handlePickerKey(event: event, key: key, modifiers: mods)
+        }
+
         return false
     }
 
@@ -111,8 +179,8 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
 
     private func cycleTabs(_ delta: Int) {
         guard !tabs.isEmpty else { return }
-        let i = tabs.firstIndex(where: { $0.tabID == selectedTabID }) ?? 0
-        selectedTabID = tabs[(i + delta + tabs.count) % tabs.count].tabID
+        let index = tabs.firstIndex(where: { $0.tabID == selectedTabID }) ?? 0
+        selectedTabID = tabs[(index + delta + tabs.count) % tabs.count].tabID
         renderTabs()
     }
 
@@ -122,10 +190,10 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
     }
 
     private func closeTab(_ id: UUID) {
-        guard let i = tabs.firstIndex(where: { $0.tabID == id }) else { return }
-        let surface = tabs.remove(at: i)
+        guard let index = tabs.firstIndex(where: { $0.tabID == id }) else { return }
+        let surface = tabs.remove(at: index)
         if selectedTabID == id {
-            selectedTabID = tabs.indices.contains(i) ? tabs[i].tabID : tabs.last?.tabID
+            selectedTabID = tabs.indices.contains(index) ? tabs[index].tabID : tabs.last?.tabID
         }
         surface.removeFromParent()
         renderTabs()
@@ -137,18 +205,24 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
         renderTabs()
     }
 
-    private func selected() -> Surface? { tabs.first { $0.tabID == selectedTabID } }
+    private func selected() -> Surface? {
+        tabs.first { $0.tabID == selectedTabID }
+    }
 
     private func workingDirectory() -> String {
-        if let t = selected() as? TerminalSurface { return t.cwd }
-        if let e = selected() as? EditorSurface { return URL(fileURLWithPath: e.currentPath).deletingLastPathComponent().path }
-        if let a = selected() as? AgentSurface { return a.cwd }
+        if let terminal = selected() as? TerminalSurface { return terminal.resolvedWorkingDirectory() }
+        if let editor = selected() as? EditorSurface {
+            return URL(fileURLWithPath: editor.currentPath).deletingLastPathComponent().path
+        }
+        if let agent = selected() as? AgentSurface { return agent.cwd }
         return FileManager.default.currentDirectoryPath
     }
 
     private func renderTabs() {
         let surface = selected()
-        if surface?.tabID != displayedSurfaceID {
+        let didChangeSurface = surface?.tabID != displayedSurfaceID
+
+        if didChangeSurface {
             displayedSurfaceID = surface?.tabID
             currentPanel?.removeFromSuperview()
             currentPanel = nil
@@ -161,25 +235,47 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
                 surface.activate(in: view.window)
             }
             tableView.reloadData()
-        } else {
+        } else if sidebarState == .tabsPeek {
             for row in 0..<tabs.count {
                 guard let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabCell else { continue }
-                cell.configure(text: "\(tabs[row].kindPrefix) \(tabs[row].titleText)", selected: tabs[row].tabID == selectedTabID)
+                let item = tabs[row]
+                cell.configure(text: "\(item.kindPrefix) \(item.titleText)", selected: item.tabID == selectedTabID)
             }
         }
+
+        if didChangeSurface, sidebarState == .picker {
+            reloadPickerForSelectedSurface()
+        }
+
         syncTableSelection()
         updateTitle()
     }
 
     private func syncTableSelection() {
-        guard let id = selectedTabID, let row = tabs.firstIndex(where: { $0.tabID == id }) else {
+        switch sidebarState {
+        case .hidden:
             tableView.deselectAll(nil)
-            return
+
+        case .tabsPeek:
+            guard let id = selectedTabID, let row = tabs.firstIndex(where: { $0.tabID == id }) else {
+                tableView.deselectAll(nil)
+                return
+            }
+            guard tableView.selectedRow != row else { return }
+            syncingSelection = true
+            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            syncingSelection = false
+
+        case .picker:
+            guard pickerSelectionIndex >= 0, pickerSelectionIndex < pickerEntries.count else {
+                tableView.deselectAll(nil)
+                return
+            }
+            guard tableView.selectedRow != pickerSelectionIndex else { return }
+            syncingSelection = true
+            tableView.selectRowIndexes(IndexSet(integer: pickerSelectionIndex), byExtendingSelection: false)
+            syncingSelection = false
         }
-        guard tableView.selectedRow != row else { return }
-        syncingSelection = true
-        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        syncingSelection = false
     }
 
     private func updateTitle() {
@@ -188,9 +284,9 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
 
     func focusSurface(attempt: Int = 0) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, let w = self.view.window, let s = self.selected() else { return }
-            s.activate(in: w)
-            if let r = s.preferredFirstResponder, !(w.firstResponder === r), attempt < 4 {
+            guard let self, let window = self.view.window, let surface = self.selected() else { return }
+            surface.activate(in: window)
+            if let responder = surface.preferredFirstResponder, !(window.firstResponder === responder), attempt < 4 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     self.focusSurface(attempt: attempt + 1)
                 }
@@ -198,14 +294,31 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
         }
     }
 
-    private func showSidebar(_ visible: Bool) {
-        guard sidebarShown != visible else { return }
-        sidebarShown = visible
-        sidebarLeading?.constant = visible ? ci : -sidebarCollapsed - ci
-        sidebarWidth?.constant = visible ? sidebarExpanded : sidebarCollapsed
-        animate {
-            self.view.layoutSubtreeIfNeeded()
+    private func setSidebarState(_ state: SidebarState, animated: Bool = true) {
+        guard sidebarState != state else {
+            updateSidebarChrome()
+            return
         }
+
+        sidebarState = state
+        updateSidebarChrome()
+
+        let targetWidth = state == .picker ? cfg.pickerSidebarWidth : cfg.tabsSidebarWidth
+        sidebarLeading?.constant = state == .hidden ? -cfg.pickerSidebarWidth - ci : ci
+        sidebarWidth?.constant = targetWidth
+
+        if animated {
+            animate(cfg.tabsSlideDuration) {
+                self.view.layoutSubtreeIfNeeded()
+            }
+        } else {
+            view.layoutSubtreeIfNeeded()
+        }
+    }
+
+    private func updateSidebarChrome() {
+        tableView.reloadData()
+        syncTableSelection()
     }
 
     private func handlePaletteKey(_ key: String) -> Bool {
@@ -228,6 +341,10 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
     }
 
     private func presentPalette() {
+        if sidebarState == .picker {
+            dismissPicker(focusAfter: false)
+        }
+
         guard !paletteVisible else { return }
         paletteVisible = true
         center?.constant = 12
@@ -267,8 +384,8 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
             }
             return
         }
-        panel.beginSheetModal(for: window) { [weak self] r in
-            guard r == .OK, let url = panel.url else {
+        panel.beginSheetModal(for: window) { [weak self] result in
+            guard result == .OK, let url = panel.url else {
                 self?.focusSurface()
                 return
             }
@@ -276,24 +393,380 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
         }
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { tabs.count }
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { 34 }
+    private func togglePicker() {
+        cancelPendingTabsPeek()
+        if sidebarState == .picker {
+            dismissPicker()
+        } else {
+            presentPicker()
+        }
+    }
+
+    private func presentPicker() {
+        pickerQuery = ""
+        pickerSelectionIndex = -1
+        setSidebarState(.picker)
+        reloadPickerForSelectedSurface()
+        view.window?.makeFirstResponder(tableView)
+    }
+
+    private func dismissPicker(focusAfter: Bool = true) {
+        guard sidebarState == .picker else { return }
+        pickerQuery = ""
+        pickerSelectionIndex = -1
+        setSidebarState(.hidden)
+        if focusAfter {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.21) { [weak self] in
+                self?.focusSurface()
+            }
+        }
+    }
+
+    private func scheduleTabsPeek() {
+        guard sidebarState != .tabsPeek else { return }
+        if pendingTabsPeek != nil { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingTabsPeek = nil
+            guard self.sidebarState != .picker else { return }
+            self.setSidebarState(.tabsPeek)
+        }
+        pendingTabsPeek = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + cfg.tabsSlideDelay, execute: workItem)
+    }
+
+    private func cancelPendingTabsPeek() {
+        pendingTabsPeek?.cancel()
+        pendingTabsPeek = nil
+    }
+
+    private func reloadPickerForSelectedSurface() {
+        pickerQuery = ""
+        pickerSelectionIndex = -1
+
+        if selected() is AgentSurface {
+            pickerMode = .recentChats
+            pickerBaseEntries = [sidebarInfoEntry("recent chats"), sidebarInfoEntry("loading chats…")]
+            applyPickerFilter()
+            loadRecentChats()
+            return
+        }
+
+        let directory = workingDirectory()
+        pickerMode = .files(directory: directory)
+        loadDirectory(directory)
+    }
+
+    private func loadRecentChats() {
+        pickerLoadGeneration += 1
+        let generation = pickerLoadGeneration
+        AgentBridge.loadRecentThreads(cwd: workingDirectory()) { [weak self] threads in
+            guard let self, generation == self.pickerLoadGeneration else { return }
+            guard self.sidebarState == .picker, self.pickerMode == .recentChats else { return }
+            let entries = sidebarRecentChatEntries(threads)
+            self.pickerBaseEntries = [sidebarInfoEntry("recent chats")] + (entries.isEmpty ? [sidebarInfoEntry("no recent chats")] : entries)
+            self.applyPickerFilter()
+        }
+    }
+
+    private func loadDirectory(_ directory: String) {
+        pickerMode = .files(directory: directory)
+        let displayDirectory = directory.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+        do {
+            let entries = try sidebarDirectoryEntries(at: directory)
+            pickerBaseEntries = [sidebarInfoEntry(displayDirectory)] + (entries.isEmpty ? [sidebarInfoEntry("empty folder")] : entries)
+        } catch {
+            pickerBaseEntries = [sidebarInfoEntry(displayDirectory), sidebarInfoEntry("could not read folder")]
+        }
+        applyPickerFilter()
+    }
+
+    private func applyPickerFilter() {
+        let filtered = sidebarFilterEntries(pickerBaseEntries, query: pickerQuery)
+        if pickerQuery.isEmpty {
+            pickerEntries = pickerBaseEntries
+        } else if filtered.isEmpty {
+            pickerEntries = [sidebarInfoEntry("no matches")]
+        } else {
+            pickerEntries = filtered
+        }
+
+        pickerSelectionIndex = pickerEntries.firstIndex(where: { $0.isActivatable }) ?? -1
+        tableView.reloadData()
+        syncTableSelection()
+    }
+
+    private func handlePickerKey(event: NSEvent, key: String, modifiers: NSEvent.ModifierFlags) -> Bool {
+        switch event.keyCode {
+        case 53:
+            dismissPicker()
+            return true
+        case 123:
+            navigatePickerToParentDirectory()
+            return true
+        case 124:
+            activateSelectedPickerEntry()
+            return true
+        case 125:
+            movePickerSelection(1)
+            return true
+        case 126:
+            movePickerSelection(-1)
+            return true
+        case 36, 76:
+            activateSelectedPickerEntry()
+            return true
+        case 51, 117:
+            backspacePickerQuery()
+            return true
+        default:
+            break
+        }
+
+        guard !modifiers.contains(.command), !modifiers.contains(.control), !modifiers.contains(.option) else {
+            return false
+        }
+        guard let characters = event.charactersIgnoringModifiers, characters.count == 1 else {
+            return false
+        }
+        guard let scalar = characters.unicodeScalars.first, !CharacterSet.controlCharacters.contains(scalar) else {
+            return false
+        }
+
+        appendPickerQuery(characters.lowercased())
+        return true
+    }
+
+    private func handleSidebarTableKey(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.shift, .control, .option, .command])
+        let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+
+        switch sidebarState {
+        case .picker:
+            return handlePickerKey(event: event, key: key, modifiers: modifiers)
+
+        case .tabsPeek:
+            switch event.keyCode {
+            case 53:
+                setSidebarState(.hidden)
+                focusSurface()
+                return true
+            case 125:
+                cycleTabs(1)
+                return true
+            case 126:
+                cycleTabs(-1)
+                return true
+            case 36, 76:
+                setSidebarState(.hidden)
+                focusSurface()
+                return true
+            default:
+                return false
+            }
+
+        case .hidden:
+            return false
+        }
+    }
+
+    private func appendPickerQuery(_ string: String) {
+        pickerQuery += string
+        applyPickerFilter()
+    }
+
+    private func backspacePickerQuery() {
+        guard !pickerQuery.isEmpty else { return }
+        pickerQuery.removeLast()
+        applyPickerFilter()
+    }
+
+    private func movePickerSelection(_ delta: Int) {
+        let activatableRows = pickerEntries.enumerated().compactMap { offset, entry in
+            entry.isActivatable ? offset : nil
+        }
+        guard !activatableRows.isEmpty else { return }
+
+        let current = activatableRows.firstIndex(of: pickerSelectionIndex) ?? 0
+        let next = (current + delta + activatableRows.count) % activatableRows.count
+        pickerSelectionIndex = activatableRows[next]
+        syncTableSelection()
+        tableView.scrollRowToVisible(pickerSelectionIndex)
+    }
+
+    private func navigatePickerToParentDirectory() {
+        guard case .files(let directory) = pickerMode, directory != "/" else { return }
+        pickerQuery = ""
+        let parent = URL(fileURLWithPath: directory).deletingLastPathComponent().path.ifEmpty("/")
+        loadDirectory(parent)
+    }
+
+    private func activateSelectedPickerEntry() {
+        guard pickerSelectionIndex >= 0, pickerSelectionIndex < pickerEntries.count else { return }
+        activatePickerEntry(pickerEntries[pickerSelectionIndex])
+    }
+
+    private func activatePickerEntry(_ entry: SidebarPickerEntry) {
+        switch entry.kind {
+        case .info:
+            return
+
+        case .recentChat:
+            activateRecentChat(entry)
+
+        case .parentDirectory, .directory:
+            guard let path = entry.path else { return }
+            pickerQuery = ""
+            loadDirectory(path)
+
+        case .file:
+            guard let path = entry.path else { return }
+            if shouldOpenInBrowser(path: path) {
+                dismissPicker(focusAfter: false)
+                openBrowser(path: path)
+            } else if sidebarIsLikelyTextFile(at: path) {
+                dismissPicker(focusAfter: false)
+                openEditor(path: path)
+            } else if FileManager.default.isExecutableFile(atPath: path) {
+                dismissPicker(focusAfter: false)
+                runExecutable(at: path)
+            } else {
+                dismissPicker(focusAfter: false)
+                openWithSystem(at: path)
+            }
+        }
+    }
+
+    private func shouldOpenInBrowser(path: String) -> Bool {
+        switch URL(fileURLWithPath: path).pathExtension.lowercased() {
+        case "pdf", "html", "htm":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func openBrowser(path: String) {
+        install(BrowserSurface(url: URL(fileURLWithPath: path)))
+    }
+
+    private func activateRecentChat(_ entry: SidebarPickerEntry) {
+        guard let threadId = entry.threadId, let cwd = entry.cwd else { return }
+        if let existing = tabs
+            .compactMap({ $0 as? AgentSurface })
+            .first(where: { $0.currentThreadID == threadId })
+        {
+            selectedTabID = existing.tabID
+            renderTabs()
+            dismissPicker(focusAfter: false)
+            return
+        }
+
+        guard let currentAgent = selected() as? AgentSurface else { return }
+        AgentBridge.loadThreadSnapshot(cwd: cwd, threadId: threadId) { [weak self, weak currentAgent] snapshot in
+            guard let self, let currentAgent, let snapshot else { return }
+            if let existing = self.tabs
+                .compactMap({ $0 as? AgentSurface })
+                .first(where: { $0 !== currentAgent && $0.currentThreadID == snapshot.threadId })
+            {
+                self.selectedTabID = existing.tabID
+                self.renderTabs()
+                self.dismissPicker(focusAfter: false)
+                return
+            }
+
+            currentAgent.replaceThread(with: snapshot)
+            self.selectedTabID = currentAgent.tabID
+            self.renderTabs()
+            self.dismissPicker(focusAfter: false)
+        }
+    }
+
+    private func runExecutable(at path: String) {
+        let command = shellQuote(path)
+        if let terminal = selected() as? TerminalSurface {
+            terminal.run(command: command)
+            terminal.activate(in: view.window)
+            return
+        }
+
+        let directory = URL(fileURLWithPath: path).deletingLastPathComponent().path
+        install(TerminalSurface(cwd: directory, initialCommand: command))
+    }
+
+    private func openWithSystem(at path: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = [path]
+        try? process.run()
+    }
+
+    @objc private func sidebarRowClicked() {
+        guard sidebarState == .picker else { return }
+        let row = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
+        guard row >= 0, row < pickerEntries.count else { return }
+        pickerSelectionIndex = row
+        syncTableSelection()
+        activateSelectedPickerEntry()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        switch sidebarState {
+        case .hidden:
+            return 0
+        case .tabsPeek:
+            return tabs.count
+        case .picker:
+            return pickerEntries.count
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        34
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let id = NSUserInterfaceItemIdentifier("TabCell")
-        let cell = (tableView.makeView(withIdentifier: id, owner: self) as? TabCell) ?? TabCell(frame: .zero)
-        cell.identifier = id
-        let item = tabs[row]
-        cell.configure(text: "\(item.kindPrefix) \(item.titleText)", selected: item.tabID == selectedTabID)
-        return cell
+        switch sidebarState {
+        case .hidden:
+            return nil
+
+        case .tabsPeek:
+            let identifier = NSUserInterfaceItemIdentifier("TabCell")
+            let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? TabCell) ?? TabCell(frame: .zero)
+            cell.identifier = identifier
+            let item = tabs[row]
+            cell.configure(text: "\(item.kindPrefix) \(item.titleText)", selected: item.tabID == selectedTabID)
+            return cell
+
+        case .picker:
+            let identifier = NSUserInterfaceItemIdentifier("SidebarPickerCell")
+            let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? SidebarPickerCell) ?? SidebarPickerCell(frame: .zero)
+            cell.identifier = identifier
+            let entry = pickerEntries[row]
+            cell.configure(entry: entry, selected: row == pickerSelectionIndex)
+            return cell
+        }
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !syncingSelection else { return }
         let row = tableView.selectedRow
-        guard row >= 0, row < tabs.count else { return }
-        selectedTabID = tabs[row].tabID
-        renderTabs()
+        guard row >= 0 else { return }
+
+        switch sidebarState {
+        case .hidden:
+            return
+
+        case .tabsPeek:
+            guard row < tabs.count else { return }
+            selectedTabID = tabs[row].tabID
+            renderTabs()
+
+        case .picker:
+            guard row < pickerEntries.count else { return }
+            pickerSelectionIndex = row
+        }
     }
 
     private func setupGlass() {
@@ -317,11 +790,16 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
         tableView.selectionHighlightStyle = .none
         tableView.intercellSpacing = NSSize(width: 0, height: 6)
         tableView.rowHeight = 34
-        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("tab"))
-        col.resizingMask = .autoresizingMask
-        tableView.addTableColumn(col)
+        tableView.target = self
+        tableView.action = #selector(sidebarRowClicked)
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("sidebar"))
+        column.resizingMask = .autoresizingMask
+        tableView.addTableColumn(column)
         tableView.delegate = self
         tableView.dataSource = self
+        tableView.onKeyDown = { [weak self] event in
+            self?.handleSidebarTableKey(event) ?? false
+        }
 
         sidebarScroll.translatesAutoresizingMaskIntoConstraints = false
         sidebarScroll.borderType = .noBorder
@@ -331,10 +809,12 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
         sidebarScroll.documentView = tableView
         sidebar.addSubview(sidebarScroll)
 
-        sidebarLeading = sidebar.leadingAnchor.constraint(equalTo: windowGlass.leadingAnchor, constant: -sidebarCollapsed - ci)
+        sidebarLeading = sidebar.leadingAnchor.constraint(equalTo: windowGlass.leadingAnchor, constant: -cfg.pickerSidebarWidth - ci)
+        sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: cfg.tabsSidebarWidth)
+
         sidebarLeading?.isActive = true
-        sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: sidebarCollapsed)
         sidebarWidth?.isActive = true
+
         NSLayoutConstraint.activate([
             sidebar.topAnchor.constraint(equalTo: windowGlass.topAnchor, constant: ci),
             sidebar.bottomAnchor.constraint(equalTo: windowGlass.bottomAnchor, constant: -ci),
@@ -379,17 +859,17 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
         row.alignment = .centerY
         row.spacing = 10
 
-        let k = NSTextField(labelWithString: key)
-        k.font = cfg.font(.medium)
-        k.textColor = cfg.color("theme.overlay_text")
-        k.setContentHuggingPriority(.required, for: .horizontal)
+        let keyLabel = NSTextField(labelWithString: key)
+        keyLabel.font = cfg.font(.medium)
+        keyLabel.textColor = cfg.color("theme.overlay_text")
+        keyLabel.setContentHuggingPriority(.required, for: .horizontal)
 
-        let t = NSTextField(labelWithString: title)
-        t.font = .systemFont(ofSize: 13, weight: .medium)
-        t.textColor = cfg.color("theme.overlay_subdued")
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = cfg.color("theme.overlay_subdued")
 
-        row.addArrangedSubview(k)
-        row.addArrangedSubview(t)
+        row.addArrangedSubview(keyLabel)
+        row.addArrangedSubview(titleLabel)
         return row
     }
 }

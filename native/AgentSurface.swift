@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 final class AgentSurface: Surface {
-    private let initialDirectory: String
+    private var currentDirectory: String
     private let scrollView = NSScrollView()
     private let feedDocument = NSView()
     private let feedStack = NSStackView()
@@ -15,15 +15,17 @@ final class AgentSurface: Surface {
     private var conversationTitle: String?
     private var shouldAutoScroll = true
     private var composerHeightConstraint: NSLayoutConstraint?
+    private var modelLoadGeneration = 0
 
     override var titleText: String {
-        conversationTitle ?? URL(fileURLWithPath: initialDirectory).lastPathComponent.ifEmpty(initialDirectory)
+        conversationTitle ?? URL(fileURLWithPath: currentDirectory).lastPathComponent.ifEmpty(currentDirectory)
     }
     override var preferredFirstResponder: NSResponder? { composer.textView }
-    var cwd: String { initialDirectory }
+    var cwd: String { currentDirectory }
+    var currentThreadID: String? { threadID }
 
     init(cwd: String) {
-        initialDirectory = cwd
+        currentDirectory = cwd
         super.init(kindPrefix: "A")
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -141,7 +143,7 @@ final class AgentSurface: Surface {
         activeAssistantMessage = nil
 
         let task = AgentBridge.makeTurnTask(
-            cwd: initialDirectory,
+            cwd: currentDirectory,
             prompt: trimmed,
             effort: composer.reasoning,
             model: composer.model?.model,
@@ -253,6 +255,29 @@ final class AgentSurface: Surface {
         scrollToBottom()
     }
 
+    func replaceThread(with snapshot: AgentThreadSnapshot) {
+        let priorTurn = activeTurn
+        activeTurn = nil
+        priorTurn?.cancel()
+
+        threadID = snapshot.threadId
+        currentDirectory = snapshot.cwd
+        conversationTitle = snapshot.title
+        activeAssistantMessage = nil
+        shouldAutoScroll = true
+
+        clearFeed()
+        for item in snapshot.items {
+            appendSnapshotItem(item)
+        }
+
+        composer.clear()
+        composer.setBusy(false)
+        loadModels()
+        onStateChange?()
+        scrollToBottom(force: true)
+    }
+
     @discardableResult
     private func appendMessage(text: String, tone: AgentMessageTone, emphasized: Bool = false) -> AgentMessageView {
         let message = AgentMessageView(text: text, tone: tone, emphasized: emphasized)
@@ -279,16 +304,65 @@ final class AgentSurface: Surface {
         wrap.addSubview(content)
         content.translatesAutoresizingMaskIntoConstraints = false
 
-        NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: wrap.leadingAnchor),
+        let isTrailingMessage = (content as? AgentMessageView)?.prefersTrailingAlignment == true
+        let maxWidthMultiplier = (content as? AgentMessageView)?.maxWidthMultiplier ?? 0.96
+
+        var constraints = [
             content.topAnchor.constraint(equalTo: wrap.topAnchor),
             content.bottomAnchor.constraint(equalTo: wrap.bottomAnchor),
-            content.trailingAnchor.constraint(lessThanOrEqualTo: wrap.trailingAnchor),
-            content.widthAnchor.constraint(lessThanOrEqualTo: wrap.widthAnchor, multiplier: 0.96),
-        ])
+            content.widthAnchor.constraint(lessThanOrEqualTo: wrap.widthAnchor, multiplier: maxWidthMultiplier),
+        ]
+
+        if isTrailingMessage {
+            constraints.append(content.leadingAnchor.constraint(greaterThanOrEqualTo: wrap.leadingAnchor))
+            constraints.append(content.trailingAnchor.constraint(equalTo: wrap.trailingAnchor))
+        } else {
+            constraints.append(content.leadingAnchor.constraint(equalTo: wrap.leadingAnchor))
+            constraints.append(content.trailingAnchor.constraint(lessThanOrEqualTo: wrap.trailingAnchor))
+        }
+
+        NSLayoutConstraint.activate(constraints)
 
         feedStack.addArrangedSubview(wrap)
         wrap.widthAnchor.constraint(equalTo: feedStack.widthAnchor).isActive = true
+    }
+
+    private func clearFeed() {
+        for view in feedStack.arrangedSubviews {
+            feedStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+    }
+
+    private func appendSnapshotItem(_ item: AgentThreadSnapshotItem) {
+        switch item.kind {
+        case "message":
+            guard let tone = messageTone(from: item.tone), let text = item.text else { return }
+            _ = appendMessage(text: text, tone: tone)
+        case "activity":
+            guard let kind = activityKind(from: item.activity), let title = item.title else { return }
+            _ = appendActivity(kind: kind, title: title, detail: item.detail, text: item.text, lines: item.lines ?? [])
+        default:
+            return
+        }
+    }
+
+    private func messageTone(from value: String?) -> AgentMessageTone? {
+        switch value {
+        case "assistant": return .assistant
+        case "user": return .user
+        case "status": return .status
+        case "error": return .error
+        default: return nil
+        }
+    }
+
+    private func activityKind(from value: String?) -> AgentActivityKind? {
+        switch value {
+        case "trace": return .trace
+        case "edit": return .edit
+        default: return nil
+        }
     }
 
     private func ensureAssistantMessage(tone: AgentMessageTone = .assistant) -> AgentMessageView {
@@ -351,8 +425,10 @@ final class AgentSurface: Surface {
     }
 
     private func loadModels() {
-        AgentBridge.loadModels(cwd: initialDirectory) { [weak self] options in
-            guard let self else { return }
+        modelLoadGeneration += 1
+        let generation = modelLoadGeneration
+        AgentBridge.loadModels(cwd: currentDirectory) { [weak self] options in
+            guard let self, generation == self.modelLoadGeneration else { return }
             self.composer.setModels(options)
             self.selectionMenu.setModels(options)
             self.selectionMenu.setSelectedModel(self.composer.model?.model)
