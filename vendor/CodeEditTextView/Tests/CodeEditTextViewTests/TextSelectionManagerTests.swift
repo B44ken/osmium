@@ -121,6 +121,51 @@ final class TextSelectionManagerTests: XCTestCase {
         }
     }
 
+    func test_updateSelectionWordUsesAppKitBoundaries() {
+        let selectionManager = selectionManager("foo.bar baz")
+        let forwardLocations = [0, 3, 7]
+        let forwardExpected = [(0, 7), (3, 4), (7, 4)]
+
+        for idx in forwardLocations.indices {
+            let range = selectionManager.rangeOfSelection(
+                from: forwardLocations[idx],
+                direction: .forward,
+                destination: .word,
+                decomposeCharacters: false
+            )
+
+            XCTAssert(
+                range.location == forwardExpected[idx].0,
+                "Invalid Location. Testing location \(forwardLocations[idx]). Expected \(forwardExpected[idx]). Got \(range)"
+            )
+            XCTAssert(
+                range.length == forwardExpected[idx].1,
+                "Invalid Location. Testing location \(forwardLocations[idx]). Expected \(forwardExpected[idx]). Got \(range)"
+            )
+        }
+
+        let backwardLocations = [4, 9]
+        let backwardExpected = [(0, 4), (8, 1)]
+
+        for idx in backwardLocations.indices {
+            let range = selectionManager.rangeOfSelection(
+                from: backwardLocations[idx],
+                direction: .backward,
+                destination: .word,
+                decomposeCharacters: false
+            )
+
+            XCTAssert(
+                range.location == backwardExpected[idx].0,
+                "Invalid Location. Testing location \(backwardLocations[idx]). Expected \(backwardExpected[idx]). Got \(range)"
+            )
+            XCTAssert(
+                range.length == backwardExpected[idx].1,
+                "Invalid Location. Testing location \(backwardLocations[idx]). Expected \(backwardExpected[idx]). Got \(range)"
+            )
+        }
+    }
+
     func test_updateSelectionLeftLine() {
         // "Loren Ipsum 💯"
         let selectionManager = selectionManager()

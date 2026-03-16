@@ -8,6 +8,8 @@
     "build:native": "swift build --package-path native",
     "build:native:release": "swift build -c release --package-path native",
     "run:app": "swift run --package-path native OsmiumApp",
+    "test:agent": "bun test src/agent/reducer.test.ts",
+    "test:sidebar": "bun test src/sidebar/engine.test.ts",
     "osm": "$HOME/.bun/bin/bun run src/main.ts"
   },
   "devDependencies": {

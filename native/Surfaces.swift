@@ -21,7 +21,7 @@ class Surface: NSViewController {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    func save(binds: [SaveBind]) -> String? { nil }
+    func save() -> String? { nil }
 
     func activate(in window: NSWindow?) {
         guard let r = preferredFirstResponder else { return }
@@ -233,6 +233,7 @@ final class EditorSurface: Surface {
         addChild(editorController)
         root.addSubview(editorController.view)
         editorController.view.pin(to: root)
+        editorController.textView.wrapLines = true
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(textDidChange),
@@ -245,22 +246,13 @@ final class EditorSurface: Surface {
         window?.makeFirstResponder(editorController.textView)
     }
 
-    override func save(binds: [SaveBind]) -> String? {
+    override func save() -> String? {
         let url = URL(fileURLWithPath: filePath)
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try editorController.text.write(to: url, atomically: true, encoding: .utf8)
             dirty = false
             onStateChange?()
-            let matching = binds.filter { $0.event == "save:\(filePath)" || $0.event == "save:\(url.lastPathComponent)" }
-            for bind in matching {
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/bin/sh")
-                p.arguments = ["-lc", bind.command]
-                p.currentDirectoryURL = url.deletingLastPathComponent()
-                try? p.run()
-            }
-            if let last = matching.last { return "saved \(url.lastPathComponent) and ran `\(last.command)`" }
             return "saved \(url.lastPathComponent)"
         } catch {
             return "save failed: \(error.localizedDescription)"
@@ -282,7 +274,7 @@ final class EditorSurface: Surface {
                 font: cfg.font(.regular),
                 lineHeightMultiple: 1.15,
                 letterSpacing: 1.0,
-                wrapLines: false,
+                wrapLines: true,
                 useSystemCursor: true,
                 tabWidth: 4,
                 bracketPairEmphasis: .flash

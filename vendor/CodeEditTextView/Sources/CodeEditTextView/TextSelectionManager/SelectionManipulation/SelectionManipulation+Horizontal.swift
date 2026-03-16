@@ -5,7 +5,7 @@
 //  Created by Khan Winter on 5/11/24.
 //
 
-import Foundation
+import AppKit
 
 package extension TextSelectionManager {
     /// Extends a selection from the given offset determining the length by the destination.
@@ -24,7 +24,9 @@ package extension TextSelectionManager {
         delta: Int,
         decomposeCharacters: Bool = false
     ) -> NSRange {
-        guard let string = textStorage?.string as NSString? else { return NSRange(location: offset, length: 0) }
+        guard let textStorage, let string = textStorage.string as NSString? else {
+            return NSRange(location: offset, length: 0)
+        }
 
         switch destination {
         case .character:
@@ -35,7 +37,7 @@ package extension TextSelectionManager {
                 decomposeCharacters: decomposeCharacters
             )
         case .word:
-            return extendSelectionWord(string: string, from: offset, delta: delta)
+            return extendSelectionWord(textStorage: textStorage, from: offset, delta: delta)
         case .line:
             return extendSelectionLine(string: string, from: offset, delta: delta)
         case .visualLine:
@@ -90,40 +92,12 @@ package extension TextSelectionManager {
     ///   - offset: The location to start extending the selection from.
     ///   - delta: The direction the selection should be extended. `1` for forwards, `-1` for backwards.
     /// - Returns: The range of the extended selection.
-    private func extendSelectionWord(string: NSString, from offset: Int, delta: Int) -> NSRange {
-        var enumerationOptions: NSString.EnumerationOptions = .byCaretPositions
-        if delta < 0 {
-            enumerationOptions.formUnion(.reverse)
+    private func extendSelectionWord(textStorage: NSTextStorage, from offset: Int, delta: Int) -> NSRange {
+        let nextOffset = textStorage.nextWord(from: offset, forward: delta > 0)
+        guard nextOffset != NSNotFound, nextOffset != offset else {
+            return NSRange(location: offset, length: 0)
         }
-        var rangeToDelete = NSRange(location: offset, length: 0)
-
-        var hasFoundValidWordChar = false
-        string.enumerateSubstrings(
-            in: NSRange(location: delta > 0 ? offset : 0, length: delta > 0 ? string.length - offset : offset),
-            options: enumerationOptions
-        ) { substring, _, _, stop in
-            guard let substring = substring else {
-                stop.pointee = true
-                return
-            }
-
-            if hasFoundValidWordChar && CharacterSet.punctuationCharacters
-                .union(.whitespacesAndNewlines)
-                .subtracting(CharacterSet.codeIdentifierCharacters)
-                .isSuperset(of: CharacterSet(charactersIn: substring)) {
-                stop.pointee = true
-                return
-            } else if CharacterSet.codeIdentifierCharacters.isSuperset(of: CharacterSet(charactersIn: substring)) {
-                hasFoundValidWordChar = true
-            }
-            rangeToDelete.length += substring.count
-
-            if delta < 0 {
-                rangeToDelete.location -= substring.count
-            }
-        }
-
-        return rangeToDelete
+        return NSRange(start: min(offset, nextOffset), end: max(offset, nextOffset))
     }
 
     /// Extends the selection by one visual line in the direction specified (eg one line fragment).

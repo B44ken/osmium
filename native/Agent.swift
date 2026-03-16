@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-struct AgentBridgeEvent: Decodable {
+struct AgentBridgeEvent: Codable {
     let type: String
     let threadId: String?
     let turnId: String?
@@ -17,13 +17,13 @@ struct AgentBridgeEvent: Decodable {
     let thread: AgentThreadSnapshot?
 }
 
-struct AgentBridgeModel: Decodable {
+struct AgentBridgeModel: Codable {
     let model: String
     let displayName: String
     let isDefault: Bool
 }
 
-struct AgentThreadSummary: Decodable, Equatable {
+struct AgentThreadSummary: Codable, Equatable {
     let threadId: String
     let cwd: String
     let title: String
@@ -31,14 +31,14 @@ struct AgentThreadSummary: Decodable, Equatable {
     let updatedAt: TimeInterval
 }
 
-struct AgentThreadSnapshot: Decodable {
+struct AgentThreadSnapshot: Codable {
     let threadId: String
     let cwd: String
     let title: String
     let items: [AgentThreadSnapshotItem]
 }
 
-struct AgentThreadSnapshotItem: Decodable {
+struct AgentThreadSnapshotItem: Codable {
     let kind: String
     let tone: String?
     let activity: String?
@@ -115,5 +115,19 @@ extension Cfg {
     func mono(_ size: CGFloat, _ weight: NSFont.Weight = .regular) -> NSFont {
         let n = string("options.font_mono")
         return NSFont(name: n, size: size) ?? .monospacedSystemFont(ofSize: size, weight: weight)
+    }
+
+    var agentDefaultModel: String? {
+        let value = optionalString("agent.model")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (value?.isEmpty == false) ? value : nil
+    }
+
+    var agentDefaultReasoning: AgentReasoningPreset {
+        guard let value = optionalString("agent.thinking")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              let preset = AgentReasoningPreset(rawValue: value)
+        else {
+            return .xhigh
+        }
+        return preset
     }
 }

@@ -19,41 +19,27 @@ final class GlassPanel: NSVisualEffectView {
     required init?(coder: NSCoder) { fatalError() }
 }
 
-final class TabCell: NSTableCellView {
-    private let label = NSTextField(labelWithString: "")
-    private let highlight = NSVisualEffectView()
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        highlight.glass(.selection, radius: 10)
-        highlight.alphaValue = 0
-        addSubview(highlight)
-        highlight.pin(to: self, insets: NSEdgeInsets(top: 2, left: 0, bottom: 2, right: 0))
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 14, weight: .medium)
-        label.lineBreakMode = .byTruncatingTail
-        label.maximumNumberOfLines = 1
-        textField = label
-        addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    func configure(text: String, selected: Bool) {
-        label.stringValue = text
-        label.textColor = selected ? cfg.color("theme.overlay_text") : cfg.color("theme.overlay_subdued")
-        highlight.alphaValue = selected ? 1 : 0
-    }
-}
-
 final class ShellWindow: NSWindow {
+    var keyEventHandler: ((NSEvent) -> Bool)?
+    var flagsEventHandler: ((NSEvent.ModifierFlags) -> Void)?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .flagsChanged:
+            flagsEventHandler?(event.modifierFlags)
+        case .keyDown:
+            if keyEventHandler?(event) == true {
+                return
+            }
+        default:
+            break
+        }
+
+        super.sendEvent(event)
+    }
 }
 
 final class CommandServer: @unchecked Sendable {
@@ -149,8 +135,6 @@ final class CommandServer: @unchecked Sendable {
 final class App: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var server: CommandServer?
-    private var flagsMonitor: Any?
-    private var keyMonitor: Any?
     private var controller: MainController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -202,6 +186,12 @@ final class App: NSObject, NSApplicationDelegate {
         w.minSize = NSSize(width: minWidth, height: minHeight)
         w.maxSize = NSSize(width: maxWidth, height: maxHeight)
         w.contentViewController = mc
+        w.flagsEventHandler = { [weak mc] flags in
+            mc?.handleModifierFlags(flags)
+        }
+        w.keyEventHandler = { [weak mc] event in
+            mc?.handleShortcut(event: event) == true
+        }
         w.center()
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -217,17 +207,9 @@ final class App: NSObject, NSApplicationDelegate {
             fputs("osmium socket failed: \(error)\n", stderr)
         }
 
-        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] e in
-            self?.controller?.handleModifierFlags(e.modifierFlags)
-            return e
-        }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
-            (self?.controller?.handleShortcut(event: e) == true) ? nil : e
-        }
-
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let mc = self?.controller, !mc.hasTabs else { return }
-            mc.apply(AppCommand(type: "open-terminal", cwd: FileManager.default.currentDirectoryPath, path: nil, url: nil, event: nil, command: nil))
+            mc.apply(AppCommand(type: "open-terminal", cwd: cfg.startDirectory, path: nil, url: nil))
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.controller?.focusSurface()
@@ -243,8 +225,6 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if let m = flagsMonitor { NSEvent.removeMonitor(m) }
-        if let m = keyMonitor { NSEvent.removeMonitor(m) }
         server?.stop()
     }
 }

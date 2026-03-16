@@ -2,11 +2,6 @@ import AppKit
 import Foundation
 import OsmiumPickerSupport
 
-enum SidebarPickerMode: Equatable {
-    case recentChats
-    case files(directory: String)
-}
-
 final class SidebarTableView: NSTableView {
     var onKeyDown: ((NSEvent) -> Bool)?
 
@@ -20,28 +15,7 @@ final class SidebarTableView: NSTableView {
     }
 }
 
-func sidebarRecentChatEntries(_ threads: [AgentThreadSummary]) -> [SidebarPickerEntry] {
-    let formatter = RelativeDateTimeFormatter()
-    formatter.unitsStyle = .abbreviated
-
-    return threads.map { thread in
-        let recency = formatter.localizedString(for: Date(timeIntervalSince1970: thread.updatedAt), relativeTo: Date())
-        let location = URL(fileURLWithPath: thread.cwd).lastPathComponent.ifEmpty(thread.cwd)
-        let secondary = "\(location) · \(recency)"
-        let searchText = [thread.title, thread.preview, thread.cwd].joined(separator: "\n").lowercased()
-
-        return SidebarPickerEntry(
-            kind: .recentChat,
-            primaryText: thread.title,
-            secondaryText: secondary,
-            searchText: searchText,
-            threadId: thread.threadId,
-            cwd: thread.cwd
-        )
-    }
-}
-
-final class SidebarPickerCell: NSTableCellView {
+final class SidebarRowCell: NSTableCellView {
     private let highlight = NSVisualEffectView()
     private let stack = NSStackView()
     private let primaryLabel = NSTextField(labelWithString: "")
@@ -57,19 +31,22 @@ final class SidebarPickerCell: NSTableCellView {
         highlight.pin(to: self, insets: NSEdgeInsets(top: 2, left: 0, bottom: 2, right: 0))
 
         stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 2
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
         addSubview(stack)
 
-        primaryLabel.font = cfg.agentFont(size: 13, weight: .medium)
-        primaryLabel.lineBreakMode = .byTruncatingMiddle
+        primaryLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        primaryLabel.lineBreakMode = .byTruncatingTail
         primaryLabel.maximumNumberOfLines = 1
+        primaryLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        secondaryLabel.font = cfg.agentFont(size: 11)
+        secondaryLabel.font = .systemFont(ofSize: 12, weight: .regular)
         secondaryLabel.textColor = cfg.color("theme.overlay_subdued").withAlphaComponent(0.84)
-        secondaryLabel.lineBreakMode = .byTruncatingMiddle
+        secondaryLabel.lineBreakMode = .byTruncatingTail
         secondaryLabel.maximumNumberOfLines = 1
+        secondaryLabel.alignment = .right
+        secondaryLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         stack.addArrangedSubview(primaryLabel)
         stack.addArrangedSubview(secondaryLabel)
@@ -82,11 +59,18 @@ final class SidebarPickerCell: NSTableCellView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(entry: SidebarPickerEntry, selected: Bool) {
-        primaryLabel.stringValue = entry.primaryText
-        secondaryLabel.stringValue = entry.secondaryText ?? ""
-        secondaryLabel.isHidden = entry.secondaryText == nil
-        let isInfo = entry.kind == .info
+    func configureTab(text: String, selected: Bool) {
+        primaryLabel.stringValue = text
+        primaryLabel.textColor = selected ? cfg.color("theme.overlay_text") : cfg.color("theme.overlay_subdued")
+        secondaryLabel.stringValue = ""
+        secondaryLabel.isHidden = true
+        highlight.alphaValue = selected ? 1 : 0
+    }
+
+    func configure(primaryText: String, secondaryText: String?, isInfo: Bool, selected: Bool) {
+        self.primaryLabel.stringValue = primaryText
+        self.secondaryLabel.stringValue = secondaryText ?? ""
+        self.secondaryLabel.isHidden = secondaryText == nil
         primaryLabel.textColor = isInfo
             ? cfg.color("theme.overlay_subdued")
             : (selected ? cfg.color("theme.overlay_text") : cfg.color("theme.overlay_text").withAlphaComponent(0.92))

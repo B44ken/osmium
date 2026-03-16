@@ -78,4 +78,15 @@ struct TextViewTests {
 
         #expect(textView.string == "Hello World")
     }
+
+    @Test
+    func beginningAndEndOfLineSelectorsMoveTheCursor() {
+        textView.selectionManager.setSelectedRange(NSRange(location: 8, length: 0))
+        textView.moveToBeginningOfLine(nil)
+        #expect(textView.selectedRange() == NSRange(location: 0, length: 0))
+
+        textView.selectionManager.setSelectedRange(NSRange(location: 2, length: 0))
+        textView.moveToEndOfLine(nil)
+        #expect(textView.selectedRange() == NSRange(location: 11, length: 0))
+    }
 }

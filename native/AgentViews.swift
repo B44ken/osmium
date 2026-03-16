@@ -31,7 +31,6 @@ final class AgentMessageView: NSView {
         bubbleView.glass(
             .selection,
             radius: 12,
-            border: cfg.color("theme.panel_border").withAlphaComponent(0.55),
             bg: NSColor.white.withAlphaComponent(0.04)
         )
         contentView.addSubview(bubbleView)
@@ -89,7 +88,7 @@ final class AgentMessageView: NSView {
     private func applyToneStyling() {
         let showsBubble = currentTone == .user
         bubbleView.alphaValue = showsBubble ? 1 : 0
-        bubbleView.layer?.borderWidth = showsBubble ? 1 : 0
+        bubbleView.layer?.borderWidth = 0
         bubbleView.layer?.backgroundColor = showsBubble ? NSColor.white.withAlphaComponent(0.04).cgColor : NSColor.clear.cgColor
         textLeadingConstraint?.constant = showsBubble ? 12 : 0
         textTrailingConstraint?.constant = showsBubble ? -12 : 0
@@ -214,72 +213,129 @@ final class AgentMessageView: NSView {
 }
 
 final class AgentActivityView: NSView {
-    private let badgeLabel = NSTextField(labelWithString: "")
-    private let titleLabel = NSTextField(wrappingLabelWithString: "")
-    private let detailLabel = NSTextField(wrappingLabelWithString: "")
-    private let textLabel = NSTextField(wrappingLabelWithString: "")
-    private let linesLabel = NSTextField(wrappingLabelWithString: "")
+    private let lineLabel = NSTextField(labelWithString: "")
 
     init(kind: AgentActivityKind, title: String, detail: String? = nil, text: String? = nil, lines: [String] = []) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let stack = NSStackView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 5
-        addSubview(stack)
-
-        let header = NSStackView()
-        header.orientation = .horizontal
-        header.alignment = .firstBaseline
-        header.spacing = 10
-
-        badgeLabel.font = cfg.agentFont(size: 12, weight: .semibold)
-        badgeLabel.stringValue = kind.label
-        badgeLabel.textColor = kind == .edit ? cfg.color("theme.editor_commands") : cfg.color("theme.overlay_subdued")
-
-        titleLabel.font = cfg.agentFont(size: 13, weight: .medium)
-        titleLabel.textColor = cfg.color("theme.overlay_text").withAlphaComponent(0.9)
-        titleLabel.stringValue = title
-
-        header.addArrangedSubview(badgeLabel)
-        header.addArrangedSubview(titleLabel)
-        stack.addArrangedSubview(header)
-
-        detailLabel.font = cfg.agentFont(size: 12)
-        detailLabel.textColor = cfg.color("theme.overlay_subdued").withAlphaComponent(0.88)
-        detailLabel.stringValue = detail ?? ""
-        detailLabel.isHidden = detail == nil
-        if detail != nil {
-            stack.addArrangedSubview(detailLabel)
-        }
-
-        textLabel.font = cfg.agentFont(size: 13)
-        textLabel.textColor = cfg.color("theme.overlay_text").withAlphaComponent(0.82)
-        textLabel.stringValue = text ?? ""
-        textLabel.isHidden = text == nil
-        if text != nil {
-            stack.addArrangedSubview(textLabel)
-        }
-
-        linesLabel.font = cfg.mono(12)
-        linesLabel.textColor = cfg.color("theme.overlay_subdued").withAlphaComponent(0.84)
-        linesLabel.stringValue = lines.joined(separator: "\n")
-        linesLabel.isHidden = lines.isEmpty
-        if !lines.isEmpty {
-            stack.addArrangedSubview(linesLabel)
-        }
+        lineLabel.translatesAutoresizingMaskIntoConstraints = false
+        lineLabel.maximumNumberOfLines = 1
+        lineLabel.lineBreakMode = .byTruncatingTail
+        lineLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        lineLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        lineLabel.attributedStringValue = activityLine(kind: kind, title: title, detail: detail, text: text, lines: lines)
+        addSubview(lineLabel)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            lineLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
+            lineLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            lineLabel.topAnchor.constraint(equalTo: topAnchor),
+            lineLabel.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: NSSize {
+        let size = lineLabel.intrinsicContentSize
+        return NSSize(width: NSView.noIntrinsicMetric, height: size.height)
+    }
+
+    private func activityLine(
+        kind: AgentActivityKind,
+        title: String,
+        detail: String?,
+        text: String?,
+        lines: [String]
+    ) -> NSAttributedString {
+        let trimmedText = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = (trimmedText?.isEmpty == false ? trimmedText : nil)
+            ?? lines.first
+            ?? detailRemainder(detail)
+            ?? title
+        let status = activityStatus(detail)
+        let duration = activityDuration(detail)
+        let tagColor = activityTagColor(status)
+
+        let output = NSMutableAttributedString()
+        if let duration {
+            output.append(tag("[\(duration)]", color: tagColor))
+            output.append(space(color: tagColor))
+        }
+        output.append(tag("[\(title)]", color: tagColor))
+        output.append(space(color: cfg.color("theme.overlay_subdued").withAlphaComponent(0.84)))
+        output.append(NSAttributedString(string: body, attributes: [
+            .font: cfg.mono(12),
+            .foregroundColor: cfg.color("theme.overlay_text").withAlphaComponent(0.84),
+        ]))
+        return output
+    }
+
+    private func tag(_ text: String, color: NSColor) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: cfg.mono(12, .semibold),
+            .foregroundColor: color,
+        ])
+    }
+
+    private func space(color: NSColor) -> NSAttributedString {
+        NSAttributedString(string: " ", attributes: [
+            .font: cfg.mono(12),
+            .foregroundColor: color,
+        ])
+    }
+
+    private func activityStatus(_ detail: String?) -> String? {
+        guard let detail else { return nil }
+        let parts = detail.split(separator: "·").map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        for part in parts {
+            if ["running", "pending", "in progress"].contains(part) { return "pending" }
+            if ["failed", "error"].contains(part) { return "failed" }
+        }
+        return nil
+    }
+
+    private func activityDuration(_ detail: String?) -> String? {
+        guard let detail else { return nil }
+        let parts = detail.split(separator: "·").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return parts.first(where: {
+            $0.hasSuffix("ms")
+            || $0.hasSuffix("s")
+            || $0.hasSuffix("m")
+        })
+    }
+
+    private func detailRemainder(_ detail: String?) -> String? {
+        guard let detail else { return nil }
+        let parts = detail.split(separator: "·").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let kept = parts.filter {
+            !$0.isEmpty
+            && $0 != activityDuration(detail)
+            && activityStatus($0) == nil
+        }
+        let text = kept.joined(separator: " ")
+        return text.isEmpty ? nil : text
+    }
+
+    private func activityStatus(_ value: String) -> String? {
+        let lowered = value.lowercased()
+        if ["running", "pending", "in progress"].contains(lowered) { return "pending" }
+        if ["failed", "error"].contains(lowered) { return "failed" }
+        return nil
+    }
+
+    private func activityTagColor(_ status: String?) -> NSColor {
+        switch status {
+        case "pending":
+            return cfg.color("theme.overlay_subdued").withAlphaComponent(0.72)
+        case "failed":
+            return appColor("ff8b8b")
+        default:
+            return cfg.color("theme.overlay_text").withAlphaComponent(0.88)
+        }
+    }
 }
 
 final class AgentReasoningRowView: NSView {
@@ -541,8 +597,9 @@ final class AgentComposerView: NSVisualEffectView, NSTextViewDelegate {
     var onModelChanged: ((AgentModelOption?) -> Void)?
 
     private let placeholder = NSTextField(labelWithString: "")
+    private let editorScroll = NSScrollView()
     private var pickerVisible = false
-    private var selectedReasoning: AgentReasoningPreset = .xhigh
+    private var selectedReasoning: AgentReasoningPreset = cfg.agentDefaultReasoning
     private var models: [AgentModelOption] = []
     private var selectedModelOption: AgentModelOption?
     private var busy = false
@@ -555,11 +612,11 @@ final class AgentComposerView: NSVisualEffectView, NSTextViewDelegate {
         super.init(frame: frame)
         glass(radius: 16, border: cfg.color("theme.panel_border"), bg: NSColor.white.withAlphaComponent(0.03))
 
-        let editorScroll = NSScrollView()
         editorScroll.translatesAutoresizingMaskIntoConstraints = false
         editorScroll.borderType = .noBorder
         editorScroll.drawsBackground = false
         editorScroll.hasVerticalScroller = true
+        editorScroll.hasHorizontalScroller = false
         editorScroll.autohidesScrollers = true
         editorScroll.scrollerStyle = .overlay
         addSubview(editorScroll)
@@ -585,7 +642,7 @@ final class AgentComposerView: NSVisualEffectView, NSTextViewDelegate {
         textView.onShortcut = { [weak self] key, modifiers, keyCode in
             self?.handleShortcut(key: key, modifiers: modifiers, keyCode: keyCode) ?? false
         }
-        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(width: 1, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.heightTracksTextView = false
         textView.textContainer?.lineFragmentPadding = 0
@@ -609,6 +666,16 @@ final class AgentComposerView: NSVisualEffectView, NSTextViewDelegate {
         updatePlaceholder()
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        let width = max(editorScroll.contentSize.width, 1)
+        if textView.frame.width != width {
+            textView.setFrameSize(NSSize(width: width, height: textView.frame.height))
+        }
+        textView.minSize = NSSize(width: width, height: 0)
+        textView.textContainer?.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+    }
 
     func setBusy(_ busy: Bool) {
         self.busy = busy
@@ -697,6 +764,15 @@ final class AgentComposerView: NSVisualEffectView, NSTextViewDelegate {
     func setModels(_ models: [AgentModelOption]) {
         self.models = models
         if let selectedModelOption, models.contains(where: { $0.model == selectedModelOption.model }) {
+            return
+        }
+        if let configured = cfg.agentDefaultModel,
+           let next = models.first(where: {
+               $0.model.caseInsensitiveCompare(configured) == .orderedSame
+               || $0.displayName.caseInsensitiveCompare(configured) == .orderedSame
+           })
+        {
+            selectModel(next)
             return
         }
         if let next = models.first(where: \.isDefault) ?? models.first {

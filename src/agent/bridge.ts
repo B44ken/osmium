@@ -5,8 +5,9 @@ import {
     type ChatGPTRecentThread,
     type ChatGPTThreadSnapshot,
 } from './chatgpt.ts'
+import { readConfig } from '../config.ts'
 
-type BridgeRecentThread = {
+export type BridgeRecentThread = {
     threadId: string
     cwd: string
     title: string
@@ -14,18 +15,18 @@ type BridgeRecentThread = {
     updatedAt: number
 }
 
-type BridgeFeedItem =
+export type BridgeFeedItem =
     | { kind: 'message'; tone: 'assistant' | 'user' | 'status' | 'error'; text: string }
     | { kind: 'activity'; activity: 'trace' | 'edit'; title: string; detail?: string; text?: string; lines?: string[] }
 
-type BridgeThreadSnapshot = {
+export type BridgeThreadSnapshot = {
     threadId: string
     cwd: string
     title: string
     items: BridgeFeedItem[]
 }
 
-type BridgeEvent =
+export type AgentBridgeEvent =
     | { type: 'models'; models: ChatGPTModelOption[] }
     | { type: 'threads'; threads: BridgeRecentThread[] }
     | { type: 'thread'; thread: BridgeThreadSnapshot }
@@ -96,7 +97,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     return { mode: 'chat', cwd, prompt, threadId, effort, model }
 }
 
-const emit = (event: BridgeEvent): void => { process.stdout.write(`${JSON.stringify(event)}\n`) }
+const emit = (event: AgentBridgeEvent): void => { process.stdout.write(`${JSON.stringify(event)}\n`) }
 
 const stringValue = (value: unknown): string | undefined =>
     typeof value == 'string' && value.trim() ? value.trim() : undefined
@@ -115,6 +116,8 @@ function truncate(text: string | undefined, limit = 520): string | undefined {
     if (text.length <= limit) return text
     return `${text.slice(0, limit - 1)}…`
 }
+
+const truncateToolText = (text: string | undefined) => truncate(text, 140)
 
 function formatDuration(ms: number | undefined): string | undefined {
     if (ms === undefined) return undefined
@@ -172,6 +175,17 @@ function detailLine(parts: Array<string | undefined>): string | undefined {
 function basename(path: string): string {
     const pieces = path.split('/').filter(Boolean)
     return pieces.at(-1) ?? path
+}
+
+async function readAgentDefaults(): Promise<{ model?: string; effort?: ChatGPTReasoningEffort }> {
+    const config = await readConfig()
+    const agent = recordValue(config.agent)
+    const model = stringValue(agent?.model)
+    const thinking = stringValue(agent?.thinking)?.toLowerCase()
+    const effort = thinking == 'low' || thinking == 'medium' || thinking == 'high' || thinking == 'xhigh'
+        ? thinking
+        : undefined
+    return { model, effort }
 }
 
 function threadTitle(name: string | null | undefined, preview: string | undefined, cwd: string): string {
@@ -246,7 +260,7 @@ function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
                     formatDuration(numberValue(entry.durationMs)),
                     stringValue(entry.cwd),
                 ]),
-                text: truncate(command, 420),
+                text: truncateToolText(command),
             }
         }
         case 'mcpToolCall': {
@@ -261,7 +275,7 @@ function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
                     statusLabel(entry.status),
                     formatDuration(numberValue(entry.durationMs)),
                 ]),
-                text: truncate(error ?? stringifyJson(entry.arguments) ?? stringifyJson(entry.result)),
+                text: truncateToolText(error ?? stringifyJson(entry.arguments) ?? stringifyJson(entry.result)),
             }
         }
         case 'dynamicToolCall': {
@@ -276,7 +290,7 @@ function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
                     typeof entry.success == 'boolean' ? (entry.success ? 'ok' : 'failed') : undefined,
                     formatDuration(numberValue(entry.durationMs)),
                 ]),
-                text: truncate(contentItemText(entry.contentItems) ?? stringifyJson(entry.arguments)),
+                text: truncateToolText(contentItemText(entry.contentItems) ?? stringifyJson(entry.arguments)),
             }
         }
         case 'webSearch': {
@@ -307,7 +321,9 @@ function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
     }
 }
 
-function bridgeItemEvent(threadId: string, turnId: string, item: unknown): BridgeEvent | null {
+export const bridgeFeedItemForTest = bridgeFeedItem
+
+function bridgeItemEvent(threadId: string, turnId: string, item: unknown): AgentBridgeEvent | null {
     const normalized = bridgeFeedItem(item)
     if (!normalized || normalized.kind != 'activity') return null
     return normalized.activity == 'trace'
@@ -349,7 +365,13 @@ function bridgeThreadSnapshot(thread: ChatGPTThreadSnapshot): BridgeThreadSnapsh
 
 async function main(): Promise<void> {
     const args = parseArgs(process.argv.slice(2))
-    const client = await ChatGPTClient.create({ cwd: args.cwd, codexPath: process.env.CODEX, sandbox: 'workspace-write' })
+    const agentDefaults = await readAgentDefaults()
+    const client = await ChatGPTClient.create({
+        cwd: args.cwd,
+        codexPath: process.env.CODEX,
+        sandbox: 'workspace-write',
+        model: agentDefaults.model,
+    })
 
     try {
         if (args.mode === 'models') {
@@ -367,9 +389,14 @@ async function main(): Promise<void> {
             return
         }
 
-        for await (const event of client.stream(args.prompt, { cwd: args.cwd, threadId: args.threadId, effort: args.effort, model: args.model })) {
+        for await (const event of client.stream(args.prompt, {
+            cwd: args.cwd,
+            threadId: args.threadId,
+            effort: args.effort ?? agentDefaults.effort,
+            model: args.model ?? agentDefaults.model,
+        })) {
             if(['thread.started', 'thread.resumed', 'turn.started', 'delta'].includes(event.type))
-                emit(event as BridgeEvent)
+                emit(event as AgentBridgeEvent)
             else if(event.type == 'item.completed') {
                 const itemEvent = bridgeItemEvent(event.threadId, event.turnId, event.item)
                 if (itemEvent) emit(itemEvent)
@@ -382,7 +409,9 @@ async function main(): Promise<void> {
     } finally { await client.close() }
 }
 
-main().catch((error) => {
-    emit({ type: 'error', message: error instanceof Error ? error.message : String(error) })
-    process.exitCode = 1
-})
+if (import.meta.main) {
+    main().catch((error) => {
+        emit({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+        process.exitCode = 1
+    })
+}

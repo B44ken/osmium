@@ -1,28 +1,29 @@
 import AppKit
 import Foundation
 
+private final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 final class AgentSurface: Surface {
     private var currentDirectory: String
     private let scrollView = NSScrollView()
-    private let feedDocument = NSView()
+    private let feedDocument = FlippedDocumentView()
     private let feedStack = NSStackView()
     private let composer = AgentComposerView()
     private let selectionMenu = AgentSelectionMenuView()
 
-    private var threadID: String?
     private var activeTurn: AgentBridgeTask?
-    private var activeAssistantMessage: AgentMessageView?
-    private var conversationTitle: String?
-    private var shouldAutoScroll = true
     private var composerHeightConstraint: NSLayoutConstraint?
     private var modelLoadGeneration = 0
+    private var agentState: AgentReducerState?
 
     override var titleText: String {
-        conversationTitle ?? URL(fileURLWithPath: currentDirectory).lastPathComponent.ifEmpty(currentDirectory)
+        agentState?.title ?? URL(fileURLWithPath: currentDirectory).lastPathComponent.ifEmpty(currentDirectory)
     }
     override var preferredFirstResponder: NSResponder? { composer.textView }
     var cwd: String { currentDirectory }
-    var currentThreadID: String? { threadID }
+    var currentThreadID: String? { agentState?.threadId }
 
     init(cwd: String) {
         currentDirectory = cwd
@@ -116,6 +117,7 @@ final class AgentSurface: Surface {
             feedStack.topAnchor.constraint(equalTo: feedDocument.topAnchor, constant: 22),
             feedStack.bottomAnchor.constraint(equalTo: feedDocument.bottomAnchor, constant: -24),
         ])
+
         composer.setBusy(false)
         selectionMenu.setSelectedReasoning(composer.reasoning)
         loadModels()
@@ -130,24 +132,26 @@ final class AgentSurface: Surface {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        if conversationTitle == nil {
-            conversationTitle = Self.makeConversationTitle(from: trimmed)
-            onStateChange?()
-        }
-
         composer.clear()
-        composer.setBusy(true)
-        shouldAutoScroll = true
-
-        _ = appendMessage(text: trimmed, tone: .user)
-        activeAssistantMessage = nil
+        _ = reduceAgent(action: AgentReducerAction(
+            type: "submit",
+            prompt: trimmed,
+            event: nil,
+            completed: nil,
+            cancelled: nil,
+            stderrText: nil,
+            terminationStatus: nil,
+            terminationReason: nil,
+            snapshot: nil,
+            followsBottom: nil
+        ))
 
         let task = AgentBridge.makeTurnTask(
             cwd: currentDirectory,
             prompt: trimmed,
             effort: composer.reasoning,
             model: composer.model?.model,
-            threadId: threadID
+            threadId: agentState?.threadId
         )
         task.onEvent = { [weak self, weak task] event in
             guard let self, let task, self.activeTurn === task else { return }
@@ -159,7 +163,6 @@ final class AgentSurface: Surface {
         }
         activeTurn = task
         try! task.start()
-        scrollToBottom(force: true)
     }
 
     private func stopCurrentTurn() {
@@ -167,135 +170,113 @@ final class AgentSurface: Surface {
     }
 
     private func handleBridgeEvent(_ event: AgentBridgeEvent) {
-        switch event.type {
-        case "thread.started", "thread.resumed":
-            if let threadId = event.threadId { threadID = threadId }
-        case "turn.started":
-            _ = event.turnId
-        case "delta":
-            if let delta = event.delta {
-                let assistant = ensureAssistantMessage()
-                assistant.appendText(delta)
-                scrollToBottom()
-            }
-        case "trace":
-            if let title = event.title {
-                _ = appendActivity(kind: .trace, title: title, detail: event.detail, text: event.text, lines: event.lines ?? [])
-                scrollToBottom()
-            }
-        case "edit":
-            if let title = event.title {
-                _ = appendActivity(kind: .edit, title: title, detail: event.detail, text: event.text, lines: event.lines ?? [])
-                scrollToBottom()
-            }
-        case "completed":
-            if let threadId = event.threadId { threadID = threadId }
-            if let text = event.text, !text.isEmpty {
-                let assistant = ensureAssistantMessage()
-                if assistant.text.isEmpty {
-                    assistant.setText(text)
-                }
-            }
-            if let error = event.error, !error.isEmpty {
-                let assistant = ensureAssistantMessage(tone: .error)
-                assistant.setTone(.error)
-                if assistant.text.isEmpty {
-                    assistant.setText(error)
-                } else {
-                    assistant.appendText("\n\n\(error)")
-                }
-            }
-            activeAssistantMessage = nil
-            scrollToBottom()
-        case "error":
-            if let message = event.message ?? event.error {
-                let assistant = ensureAssistantMessage(tone: .error)
-                assistant.setTone(.error)
-                assistant.setText(message)
-                scrollToBottom()
-            }
-            activeAssistantMessage = nil
-        default:
-            break
-        }
+        _ = reduceAgent(action: AgentReducerAction(
+            type: "bridgeEvent",
+            prompt: nil,
+            event: event,
+            completed: nil,
+            cancelled: nil,
+            stderrText: nil,
+            terminationStatus: nil,
+            terminationReason: nil,
+            snapshot: nil,
+            followsBottom: nil
+        ))
     }
 
     private func handleTurnExit(_ result: AgentBridgeExit) {
         activeTurn = nil
-        composer.setBusy(false)
-
-        if result.completed {
-            return
-        }
-
-        if result.cancelled {
-            if let assistant = activeAssistantMessage, !assistant.text.isEmpty {
-                assistant.setTone(.status)
-                assistant.setText("\(assistant.text)\n\nStopped.")
-            } else {
-                _ = appendMessage(text: "Stopped.", tone: .status)
-            }
-            activeAssistantMessage = nil
-            scrollToBottom()
-            return
-        }
-
-        let fallback = result.terminationReason == .exit
-            ? "Agent bridge exited with status \(result.terminationStatus)."
-            : "Agent bridge terminated unexpectedly."
-        let message = result.stderrText ?? fallback
-
-        if let assistant = activeAssistantMessage {
-            assistant.setTone(.error)
-            assistant.setText(message)
-        } else {
-            _ = appendMessage(text: message, tone: .error)
-        }
-        activeAssistantMessage = nil
-        scrollToBottom()
+        _ = reduceAgent(action: AgentReducerAction(
+            type: "turnExit",
+            prompt: nil,
+            event: nil,
+            completed: result.completed,
+            cancelled: result.cancelled,
+            stderrText: result.stderrText,
+            terminationStatus: Int(result.terminationStatus),
+            terminationReason: result.terminationReason == .exit ? "exit" : "uncaughtSignal",
+            snapshot: nil,
+            followsBottom: nil
+        ))
     }
 
     func replaceThread(with snapshot: AgentThreadSnapshot) {
-        let priorTurn = activeTurn
+        activeTurn?.cancel()
         activeTurn = nil
-        priorTurn?.cancel()
-
-        threadID = snapshot.threadId
-        currentDirectory = snapshot.cwd
-        conversationTitle = snapshot.title
-        activeAssistantMessage = nil
-        shouldAutoScroll = true
-
-        clearFeed()
-        for item in snapshot.items {
-            appendSnapshotItem(item)
-        }
 
         composer.clear()
-        composer.setBusy(false)
+        _ = reduceAgent(action: AgentReducerAction(
+            type: "replaceThread",
+            prompt: nil,
+            event: nil,
+            completed: nil,
+            cancelled: nil,
+            stderrText: nil,
+            terminationStatus: nil,
+            terminationReason: nil,
+            snapshot: snapshot,
+            followsBottom: nil
+        ))
         loadModels()
-        onStateChange?()
-        scrollToBottom(force: true)
     }
 
     @discardableResult
-    private func appendMessage(text: String, tone: AgentMessageTone, emphasized: Bool = false) -> AgentMessageView {
-        let message = AgentMessageView(text: text, tone: tone, emphasized: emphasized)
-        addFeedRow(message)
-        return message
+    private func reduceAgent(action: AgentReducerAction) -> Bool {
+        guard let next = AppLogicBridge.shared.reduceAgent(
+            state: agentState,
+            cwd: currentDirectory,
+            action: action
+        ) else {
+            return false
+        }
+
+        applyAgentState(next)
+        return true
     }
 
-    @discardableResult
-    private func appendActivity(
-        kind: AgentActivityKind,
-        title: String,
-        detail: String? = nil,
-        text: String? = nil,
-        lines: [String] = []
-    ) -> AgentActivityView {
-        let view = AgentActivityView(kind: kind, title: title, detail: detail, text: text, lines: lines)
-        addFeedRow(view)
-        return view
+    private func applyAgentState(_ next: AgentReducerState) {
+        let priorTitle = titleText
+        let priorDirectory = currentDirectory
+        let priorThreadID = agentState?.threadId
+
+        agentState = next
+        currentDirectory = next.cwd
+        composer.setBusy(next.busy)
+        rebuildFeed(next.rows)
+
+        if next.shouldAutoScroll {
+            scrollToBottom()
+        }
+
+        if priorTitle != titleText || priorDirectory != currentDirectory || priorThreadID != next.threadId {
+            onStateChange?()
+        }
+    }
+
+    private func rebuildFeed(_ rows: [AgentBridgeRow]) {
+        clearFeed()
+
+        for row in rows {
+            addFeedRow(makeFeedView(for: row))
+        }
+    }
+
+    private func makeFeedView(for row: AgentBridgeRow) -> NSView {
+        switch row.kind {
+        case "message":
+            return AgentMessageView(text: row.text ?? "", tone: messageTone(from: row.tone) ?? .assistant)
+        case "activity":
+            let kind = activityKind(from: row.activity) ?? .trace
+            return AgentActivityView(
+                kind: kind,
+                title: row.title ?? kind.label,
+                detail: row.detail,
+                text: row.text,
+                lines: row.lines ?? []
+            )
+        default:
+            return AgentMessageView(text: row.text ?? "", tone: .assistant)
+        }
     }
 
     private func addFeedRow(_ content: NSView) {
@@ -310,8 +291,13 @@ final class AgentSurface: Surface {
         var constraints = [
             content.topAnchor.constraint(equalTo: wrap.topAnchor),
             content.bottomAnchor.constraint(equalTo: wrap.bottomAnchor),
-            content.widthAnchor.constraint(lessThanOrEqualTo: wrap.widthAnchor, multiplier: maxWidthMultiplier),
         ]
+
+        if content is AgentMessageView {
+            constraints.append(content.widthAnchor.constraint(equalTo: wrap.widthAnchor, multiplier: maxWidthMultiplier))
+        } else {
+            constraints.append(content.widthAnchor.constraint(lessThanOrEqualTo: wrap.widthAnchor, multiplier: maxWidthMultiplier))
+        }
 
         if isTrailingMessage {
             constraints.append(content.leadingAnchor.constraint(greaterThanOrEqualTo: wrap.leadingAnchor))
@@ -334,19 +320,6 @@ final class AgentSurface: Surface {
         }
     }
 
-    private func appendSnapshotItem(_ item: AgentThreadSnapshotItem) {
-        switch item.kind {
-        case "message":
-            guard let tone = messageTone(from: item.tone), let text = item.text else { return }
-            _ = appendMessage(text: text, tone: tone)
-        case "activity":
-            guard let kind = activityKind(from: item.activity), let title = item.title else { return }
-            _ = appendActivity(kind: kind, title: title, detail: item.detail, text: item.text, lines: item.lines ?? [])
-        default:
-            return
-        }
-    }
-
     private func messageTone(from value: String?) -> AgentMessageTone? {
         switch value {
         case "assistant": return .assistant
@@ -365,24 +338,7 @@ final class AgentSurface: Surface {
         }
     }
 
-    private func ensureAssistantMessage(tone: AgentMessageTone = .assistant) -> AgentMessageView {
-        if let message = activeAssistantMessage {
-            if tone != .assistant {
-                message.setTone(tone)
-            }
-            return message
-        }
-
-        let message = appendMessage(text: "", tone: tone)
-        activeAssistantMessage = message
-        return message
-    }
-
-    private func scrollToBottom(force: Bool = false) {
-        guard force || shouldAutoScroll else { return }
-        if force {
-            shouldAutoScroll = true
-        }
+    private func scrollToBottom() {
         DispatchQueue.main.async {
             self.view.layoutSubtreeIfNeeded()
             let documentHeight = self.feedDocument.bounds.height
@@ -394,7 +350,20 @@ final class AgentSurface: Surface {
     }
 
     @objc private func feedDidScroll(_ notification: Notification) {
-        shouldAutoScroll = isNearBottom()
+        let followsBottom = isNearBottom()
+        guard followsBottom != agentState?.shouldAutoScroll else { return }
+        _ = reduceAgent(action: AgentReducerAction(
+            type: "scrollFollow",
+            prompt: nil,
+            event: nil,
+            completed: nil,
+            cancelled: nil,
+            stderrText: nil,
+            terminationStatus: nil,
+            terminationReason: nil,
+            snapshot: nil,
+            followsBottom: followsBottom
+        ))
     }
 
     private func isNearBottom(tolerance: CGFloat = 36) -> Bool {
@@ -433,19 +402,5 @@ final class AgentSurface: Surface {
             self.selectionMenu.setModels(options)
             self.selectionMenu.setSelectedModel(self.composer.model?.model)
         }
-    }
-
-    private static func makeConversationTitle(from prompt: String) -> String {
-        let collapsed = prompt
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !collapsed.isEmpty else { return "chat" }
-        let limit = 44
-        guard collapsed.count > limit else { return collapsed }
-        let index = collapsed.index(collapsed.startIndex, offsetBy: limit - 1)
-        return "\(collapsed[..<index])…"
     }
 }

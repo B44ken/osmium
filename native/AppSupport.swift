@@ -78,27 +78,10 @@ struct AppCommand: Decodable, Sendable {
     let cwd: String?
     let path: String?
     let url: String?
-    let event: String?
-    let command: String?
-}
-
-struct SaveBind {
-    let event: String
-    let command: String
 }
 
 final class Cfg: Sendable {
     static let shared = Cfg()
-    private static let aliases: [String: [String]] = [
-        "options.font_size": ["options.font"],
-        "options.font_mono": ["options.font_face"],
-        "options.font_sans": ["options.agent_font_face", "options.font_face"],
-        "theme.terminal_bg": ["theme.panel_bg"],
-        "theme.terminal_foreground": ["theme.editor_text", "theme.overlay_text"],
-        "theme.terminal_cursor": ["theme.terminal_foreground", "theme.editor_text"],
-        "theme.editor_cursor": ["theme.editor_text", "theme.terminal_foreground"],
-        "theme.editor_characters": ["theme.editor_strings"],
-    ]
     private let data: [String: String]
 
     init() {
@@ -113,24 +96,10 @@ final class Cfg: Sendable {
         data = d
     }
 
-    func string(_ key: String) -> String { resolvedValue(for: key)! }
-    func float(_ key: String) -> CGFloat { CGFloat(Double(resolvedValue(for: key)!)!) }
-    func color(_ key: String) -> NSColor { appColor(resolvedValue(for: key)!) }
-
-    private func resolvedValue(for key: String, visited: Set<String> = []) -> String? {
-        if let value = data[key] {
-            return value
-        }
-
-        guard !visited.contains(key) else { return nil }
-        let nextVisited = visited.union([key])
-        for alias in Self.aliases[key] ?? [] {
-            if let value = resolvedValue(for: alias, visited: nextVisited) {
-                return value
-            }
-        }
-        return nil
-    }
+    func string(_ key: String) -> String { data[key]! }
+    func optionalString(_ key: String) -> String? { data[key] }
+    func float(_ key: String) -> CGFloat { CGFloat(Double(data[key]!)!) }
+    func color(_ key: String) -> NSColor { appColor(data[key]!) }
 }
 
 let cfg = Cfg.shared
@@ -177,7 +146,14 @@ extension Cfg {
     }
 
     var pickerSidebarWidth: CGFloat {
-        tabsSidebarWidth + 20
+        tabsSidebarWidth
+    }
+
+    var startDirectory: String {
+        optionalString("start_dir")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .ifEmpty(NSHomeDirectory())
+            ?? NSHomeDirectory()
     }
 
     var font: NSFont {

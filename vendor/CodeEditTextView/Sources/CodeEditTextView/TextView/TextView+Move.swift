@@ -109,6 +109,22 @@ extension TextView {
         updateAfterMove()
     }
 
+    override public func moveToBeginningOfLine(_ sender: Any?) {
+        moveToLeftEndOfLine(sender)
+    }
+
+    override public func moveToBeginningOfLineAndModifySelection(_ sender: Any?) {
+        moveToLeftEndOfLineAndModifySelection(sender)
+    }
+
+    override public func moveToEndOfLine(_ sender: Any?) {
+        moveToRightEndOfLine(sender)
+    }
+
+    override public func moveToEndOfLineAndModifySelection(_ sender: Any?) {
+        moveToRightEndOfLineAndModifySelection(sender)
+    }
+
     /// Moves the cursors to the beginning of the line, if pressed again selects the next line up.
     override public func moveToBeginningOfParagraph(_ sender: Any?) {
         selectionManager.moveSelections(direction: .up, destination: .line)

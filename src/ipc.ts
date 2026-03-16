@@ -1,5 +1,4 @@
-import { constants } from "node:fs";
-import { access, mkdir, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -38,14 +37,8 @@ export async function waitForSocket(timeoutMs = 8_000): Promise<void> {
   const target = socketPath();
 
   while (Date.now() - started < timeoutMs) {
-    if (await exists(target)) {
-      try {
-        const connected = await sendProbe(target);
-        if (connected) {
-          return;
-        }
-      } catch {}
-    }
+    if (await sendProbe(target))
+      return
     await Bun.sleep(60);
   }
 
@@ -64,15 +57,6 @@ async function sendProbe(target: string): Promise<boolean> {
       resolve(false);
     });
   });
-}
-
-async function exists(target: string): Promise<boolean> {
-  try {
-    await access(target, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function safeRemove(target: string): Promise<void> {

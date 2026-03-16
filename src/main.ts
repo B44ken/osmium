@@ -1,33 +1,19 @@
 #!/usr/bin/env bun
 import { spawn, spawnSync } from 'node:child_process'
 import { accessSync, constants } from 'node:fs'
-import { access, mkdir, writeFile, symlink, rm } from 'node:fs/promises'
+import { mkdir, writeFile, symlink, rm } from 'node:fs/promises'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ensureOsmDir, sendCommand, waitForSocket } from './ipc.ts'
-import { readConfig, writeConfigFlat } from './config.ts'
 import type { Command } from './protocol.ts'
 
 const OSM = fileURLToPath(new URL('..', import.meta.url))
 
 const cwd = process.cwd()
-
-async function resolveCommand(name: string) {
-  const dirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
-  const suffixes = process.platform === 'win32' ? ['', '.exe', '.cmd'] : ['']
-
-  for (const dir of dirs)
-    for (const suffix of suffixes) {
-      const file = join(dir, name + suffix)
-      try {
-        await access(file, constants.X_OK)
-        return file
-      } catch {}
-    }
-}
+const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
 
 function parseCommand(args: string[]): Command {
-  const [one, two, ...more] = args // subcommand, target (url/folder/wtv), more is unused rn
+  const [one, two] = args
   if (!one) return { type: 'open-terminal', cwd }
   else if (one === 'agent') {
     const target = two ? resolve(cwd, two) : cwd
@@ -39,9 +25,6 @@ function parseCommand(args: string[]): Command {
   } else if (one === 'web') {
     if (!two) throw new Error('usage: osm web <url>')
     return { type: 'open-browser', url: normalizeWebTarget(two), cwd }
-  } else if (one === 'bind') {
-    if (!two || !more[0]) throw new Error('usage: osm bind <event> <command>')
-    return { type: 'add-bind', event: two, command: more[0], cwd }
   } else throw new Error(`unknown subcommand: ${one}`)
 }
 
@@ -61,35 +44,49 @@ function normalizeWebTarget(target: string): string {
   }
 }
 
-const findExecutable = async (which='debug') => join(OSM + '/native/.build/' + which + '/Osmium')
+const nativeExecutable = () => join(OSM, 'native', '.build', 'release', 'Osmium')
 
-async function ensureBuild() {
-  if (await findExecutable()) return
+function ensureBuild() {
+  try {
+    accessSync(nativeExecutable(), constants.X_OK)
+    return
+  } catch {}
+
   const r = spawnSync('swift', ['build', '-c', 'release', '--package-path', join(OSM, 'native')], { cwd: OSM, stdio: 'inherit' })
   if (r.status !== 0) throw new Error('native build failed')
 }
 
 async function launch() {
-  const exe = await findExecutable()
-  if (!exe) throw new Error('executable not found after build')
-  const codex = process.env.CODEX ?? await resolveCommand('codex')
-  const node = process.env.NODE ?? await resolveCommand('node')
+  const exe = nativeExecutable()
   const path = [
     dirname(process.execPath),
-    codex && dirname(codex),
-    node && dirname(node),
     process.env.PATH,
   ].filter(Boolean).join(delimiter)
 
   const macOS = join(OSM, '.native-run', 'Osmium.app', 'Contents', 'MacOS')
   const bundled = join(macOS, 'OsmiumApp')
+  const bundledNative = join(macOS, 'OsmiumBinary')
   
   await mkdir(macOS, { recursive: true })
-  
-  try { await rm(bundled, { force: true }) } catch {}
-  await symlink(exe, bundled)
+
+  await rm(bundled, { force: true })
+  await rm(bundledNative, { force: true })
+  await symlink(exe, bundledNative)
   
   await writeFile(join(OSM, '.native-run/Osmium.app/Contents/Info.plist'), await Bun.file(join(OSM, 'src/plist.xml')).text())
+  await writeFile(
+    bundled,
+    [
+      '#!/bin/sh',
+      `export PATH=${shellQuote(path)}`,
+      `export BUN=${shellQuote(process.execPath)}`,
+      'mkdir -p "$HOME/.osm"',
+      `"${'$'}BUN" ${shellQuote(join(OSM, 'src', 'config-print.ts'))} > "$HOME/.osm/config" 2>/dev/null || true`,
+      `exec ${shellQuote(bundledNative)} "${'$'}@"`,
+      '',
+    ].join('\n'),
+    { mode: 0o755 }
+  )
 
   const child = spawn(bundled, [], {
     cwd: OSM,
@@ -99,8 +96,6 @@ async function launch() {
       ...process.env,
       PATH: path,
       BUN: process.execPath,
-      ...(codex ? { CODEX: codex } : {}),
-      ...(node ? { NODE: node } : {}),
     },
   })
   child.unref()
@@ -110,9 +105,8 @@ async function launch() {
 async function main() {
   const cmd = parseCommand(process.argv.slice(2))
   await ensureOsmDir()
-  await writeConfigFlat(await readConfig())
   if (await sendCommand(cmd)) return
-  await ensureBuild()
+  ensureBuild()
   await launch()
   await waitForSocket()
   await sendCommand(cmd)
