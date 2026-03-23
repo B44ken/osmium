@@ -82,7 +82,9 @@ struct AgentBridgeRow: Codable, Equatable {
     let kind: String
     let tone: String?
     let text: String?
+    let phase: String?
     let activity: String?
+    let badge: String?
     let title: String?
     let detail: String?
     let lines: [String]?

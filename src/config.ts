@@ -3,13 +3,19 @@ import os from 'node:os'
 import path from 'node:path'
 
 const std = {
-    start_dir: os.homedir(),
     options: {
+        start_dir: os.homedir(),
         font_size: 15,
         font_mono: 'SF Mono',
         font_sans: 'Helvetica Neue',
         tabs_slide_ms: 150,
         tabs_slide_delay: 100,
+        terminal: {
+            font_size: 15,
+        },
+        editor: {
+            font_size: 15,
+        },
     },
     window: {
         min_width: 1180,
@@ -61,10 +67,14 @@ export const readConfig = async () => {
     const file = Bun.file(path.join(os.homedir(), '.osm', 'osm.yaml'))
     if (!await file.exists()) return std
     const parsed = record(YAML.parse(await file.text()))
+    const parsedOptions = record(parsed.options)
     return {
         ...std,
-        start_dir: string(parsed.start_dir, std.start_dir),
-        options: { ...std.options, ...record(parsed.options) },
+        options: {
+            ...std.options,
+            ...parsedOptions,
+            start_dir: string(parsedOptions.start_dir ?? parsed.start_dir, std.options.start_dir),
+        },
         window: { ...std.window, ...record(parsed.window) },
         agent: { ...std.agent, ...record(parsed.agent) },
         theme: { ...std.theme, ...record(parsed.theme) },

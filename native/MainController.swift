@@ -67,7 +67,7 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
             openAgent(cwd: cmd.cwd ?? workingDirectory())
         case "open-editor":
             guard let path = cmd.path else { return }
-            openEditor(path: path)
+            openEditor(path: path, hotCommand: cmd.hot)
         case "open-browser":
             guard let raw = cmd.url, let url = URL(string: raw) else { return }
             install(BrowserSurface(url: url))
@@ -156,13 +156,16 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
         return false
     }
 
-    private func openEditor(path: String) {
+    private func openEditor(path: String, hotCommand: String?) {
         if let existing = tabs.compactMap({ $0 as? EditorSurface }).first(where: { $0.matches(path: path) }) {
+            if hotCommand != nil {
+                existing.updateHotCommand(hotCommand)
+            }
             selectedTabID = existing.tabID
             renderTabs()
             return
         }
-        install(EditorSurface(path: path))
+        install(EditorSurface(path: path, hotCommand: hotCommand))
     }
 
     private func openAgent(cwd: String) {
@@ -174,7 +177,7 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
         install(AgentSurface(cwd: cwd))
     }
 
-    private func install(_ surface: Surface) {
+    private func install(_ surface: Surface, select: Bool = true) {
         addChild(surface)
         surface.onStateChange = { [weak self] in self?.renderTabs() }
         surface.onRequestClose = { [weak self, weak surface] _ in
@@ -182,7 +185,9 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
             self.closeTab(surface.tabID)
         }
         tabs.append(surface)
-        selectedTabID = surface.tabID
+        if select {
+            selectedTabID = surface.tabID
+        }
         renderTabs()
     }
 
@@ -203,7 +208,9 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
 
     private func saveEditor() {
         guard let editor = selected() as? EditorSurface else { return }
-        _ = editor.save()
+        if editor.save() {
+            runHotCommand(for: editor)
+        }
         renderTabs()
     }
 
@@ -465,7 +472,7 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
             openBrowser(path: path)
         case "openEditor":
             guard let path = intent.path else { return }
-            openEditor(path: path)
+            openEditor(path: path, hotCommand: nil)
         case "runExecutable":
             guard let path = intent.path else { return }
             runExecutable(at: path)
@@ -536,7 +543,7 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
         panel.directoryURL = URL(fileURLWithPath: workingDirectory())
         guard let window = view.window else {
             if panel.runModal() == .OK, let url = panel.url {
-                openEditor(path: url.path)
+                openEditor(path: url.path, hotCommand: nil)
             }
             return
         }
@@ -545,7 +552,7 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
                 self?.focusSurface()
                 return
             }
-            self?.openEditor(path: url.path)
+            self?.openEditor(path: url.path, hotCommand: nil)
         }
     }
 
@@ -658,6 +665,19 @@ final class MainController: NSViewController, NSTableViewDataSource, NSTableView
 
         let directory = URL(fileURLWithPath: path).deletingLastPathComponent().path
         install(TerminalSurface(cwd: directory, initialCommand: command))
+    }
+
+    private func runHotCommand(for editor: EditorSurface) {
+        guard let command = editor.hotCommand else { return }
+        if let terminal = editor.hotTerminal(in: tabs) {
+            terminal.run(command: command)
+            return
+        }
+
+        let directory = URL(fileURLWithPath: editor.currentPath).deletingLastPathComponent().path
+        let terminal = TerminalSurface(cwd: directory, initialCommand: command)
+        editor.bindHotTerminal(terminal)
+        install(terminal, select: false)
     }
 
     private func openWithSystem(at path: String) {

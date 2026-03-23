@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { spawn, spawnSync } from 'node:child_process'
-import { accessSync, constants } from 'node:fs'
+import { accessSync, constants, readdirSync, statSync } from 'node:fs'
 import { mkdir, writeFile, symlink, rm } from 'node:fs/promises'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -12,16 +12,44 @@ const OSM = fileURLToPath(new URL('..', import.meta.url))
 const cwd = process.cwd()
 const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
 
-function parseCommand(args: string[]): Command {
+function newestNativeSourceMtime(dir: string): number {
+  let newest = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      newest = Math.max(newest, newestNativeSourceMtime(path))
+      continue
+    }
+    if (entry.name.endsWith('.swift') || entry.name === 'Package.swift')
+      newest = Math.max(newest, statSync(path).mtimeMs)
+  }
+  return newest
+}
+
+function parseEditCommand(args: string[]): Command {
+  const [file, ...rest] = args
+  if (!file) throw new Error('usage: osm edit <file> [--hot <command>]')
+
+  let hot: string | undefined
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] !== '--hot') throw new Error(`unknown flag: ${rest[i]}`)
+    hot = rest[i + 1]
+    if (!hot) throw new Error('usage: osm edit <file> [--hot <command>]')
+    i++
+  }
+
+  return { type: 'open-editor', path: resolve(cwd, file), cwd, hot }
+}
+
+export function parseCommand(args: string[]): Command {
   const [one, two] = args
   if (!one) return { type: 'open-terminal', cwd }
   else if (one === 'agent') {
     const target = two ? resolve(cwd, two) : cwd
     return { type: 'open-agent', cwd: target }
   }
-  else if (one === 'edit') {
-    if (!two) throw new Error('usage: osm edit <file>')
-    return { type: 'open-editor', path: resolve(cwd, two), cwd }
+  else if (one === 'edit' || one === 'editor') {
+    return parseEditCommand(args.slice(1))
   } else if (one === 'web') {
     if (!two) throw new Error('usage: osm web <url>')
     return { type: 'open-browser', url: normalizeWebTarget(two), cwd }
@@ -48,8 +76,10 @@ const nativeExecutable = () => join(OSM, 'native', '.build', 'release', 'Osmium'
 
 function ensureBuild() {
   try {
-    accessSync(nativeExecutable(), constants.X_OK)
-    return
+    const exe = nativeExecutable()
+    accessSync(exe, constants.X_OK)
+    if (statSync(exe).mtimeMs >= newestNativeSourceMtime(join(OSM, 'native')))
+      return
   } catch {}
 
   const r = spawnSync('swift', ['build', '-c', 'release', '--package-path', join(OSM, 'native')], { cwd: OSM, stdio: 'inherit' })
@@ -102,7 +132,7 @@ async function launch() {
 }
 
 
-async function main() {
+export async function main() {
   const cmd = parseCommand(process.argv.slice(2))
   await ensureOsmDir()
   if (await sendCommand(cmd)) return
@@ -112,7 +142,9 @@ async function main() {
   await sendCommand(cmd)
 }
 
-main().catch(e => {
-  process.stderr.write(e?.message ?? e ?? 'unknown error')
-  process.exitCode = 1
-})
+if (import.meta.main) {
+  main().catch(e => {
+    process.stderr.write(e?.message ?? e ?? 'unknown error')
+    process.exitCode = 1
+  })
+}

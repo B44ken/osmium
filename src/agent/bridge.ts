@@ -1,10 +1,10 @@
 import {
-    ChatGPTClient,
-    type ChatGPTModelOption,
-    type ChatGPTReasoningEffort,
-    type ChatGPTRecentThread,
-    type ChatGPTThreadSnapshot,
-} from './chatgpt.ts'
+    CodexClient,
+    type CodexModelOption,
+    type CodexReasoningEffort,
+    type CodexRecentThread,
+    type CodexThreadSnapshot,
+} from './usecodex.ts'
 import { readConfig } from '../config.ts'
 
 export type BridgeRecentThread = {
@@ -16,8 +16,8 @@ export type BridgeRecentThread = {
 }
 
 export type BridgeFeedItem =
-    | { kind: 'message'; tone: 'assistant' | 'user' | 'status' | 'error'; text: string }
-    | { kind: 'activity'; activity: 'trace' | 'edit'; title: string; detail?: string; text?: string; lines?: string[] }
+    | { kind: 'message'; tone: 'assistant' | 'user' | 'status' | 'error'; text: string; phase?: 'commentary' | 'final_answer' }
+    | { kind: 'activity'; activity: 'trace' | 'edit'; badge?: string; title: string; detail?: string; text?: string; lines?: string[] }
 
 export type BridgeThreadSnapshot = {
     threadId: string
@@ -27,20 +27,21 @@ export type BridgeThreadSnapshot = {
 }
 
 export type AgentBridgeEvent =
-    | { type: 'models'; models: ChatGPTModelOption[] }
+    | { type: 'models'; models: CodexModelOption[] }
     | { type: 'threads'; threads: BridgeRecentThread[] }
     | { type: 'thread'; thread: BridgeThreadSnapshot }
     | { type: 'thread.started'; threadId: string }
     | { type: 'thread.resumed'; threadId: string }
     | { type: 'turn.started'; threadId: string; turnId: string }
     | { type: 'delta'; threadId: string; turnId: string; itemId: string; delta: string }
-    | { type: 'trace'; threadId: string; turnId: string; title: string; detail?: string; text?: string; lines?: string[] }
-    | { type: 'edit'; threadId: string; turnId: string; title: string; detail?: string; text?: string; lines?: string[] }
+    | { type: 'message'; threadId: string; turnId: string; itemId?: string; tone: 'assistant' | 'user' | 'status' | 'error'; text: string; phase?: 'commentary' | 'final_answer' }
+    | { type: 'trace'; threadId: string; turnId: string; badge?: string; title: string; detail?: string; text?: string; lines?: string[] }
+    | { type: 'edit'; threadId: string; turnId: string; badge?: string; title: string; detail?: string; text?: string; lines?: string[] }
     | { type: 'completed'; threadId: string; turnId: string; text: string; error?: string }
     | { type: 'error'; message: string }
 
 type ParsedArgs =
-    | { mode: 'chat', cwd: string, prompt: string, threadId?: string, effort?: ChatGPTReasoningEffort, model?: string }
+    | { mode: 'chat', cwd: string, prompt: string, threadId?: string, effort?: CodexReasoningEffort, model?: string }
     | { mode: 'models', cwd: string }
     | { mode: 'threads', cwd: string }
     | { mode: 'thread', cwd: string, threadId: string }
@@ -49,7 +50,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     let cwd = process.cwd()
     let prompt = ''
     let threadId: string | undefined
-    let effort: ChatGPTReasoningEffort | undefined
+    let effort: CodexReasoningEffort | undefined
     let model: string | undefined
     let mode: ParsedArgs['mode'] = 'chat'
 
@@ -145,14 +146,80 @@ function stringifyJson(value: unknown): string | undefined {
     }
 }
 
-function changeLines(value: unknown): string[] {
+type FileChangeSummary = {
+    adds: number
+    deletes: number
+    badge?: string
+    title: string
+    text: string
+}
+
+function fileChangeType(value: unknown): string | undefined {
+    const kind = recordValue(value)
+    return stringValue(kind?.type) ?? stringValue(value)
+}
+
+function fileChangeVerb(value: unknown): string {
+    const type = fileChangeType(value)
+    if (type == 'delete') return 'delete'
+    if (type == 'update' && stringValue(recordValue(value)?.move_path)) return 'move'
+    return 'write'
+}
+
+function diffStat(diff: string | undefined): { adds: number, deletes: number } {
+    if (!diff) return { adds: 0, deletes: 0 }
+
+    let adds = 0
+    let deletes = 0
+    for (const line of diff.split('\n')) {
+        if (line.startsWith('+++') || line.startsWith('---')) continue
+        if (line.startsWith('+')) adds += 1
+        if (line.startsWith('-')) deletes += 1
+    }
+    return { adds, deletes }
+}
+
+function diffBadge(adds: number, deletes: number): string | undefined {
+    if (!adds && !deletes) return undefined
+    return `+${adds} -${deletes}`
+}
+
+function relativeDisplayPath(path: string, cwd: string | undefined): string {
+    if (!cwd) return path
+    if (path == cwd) return './'
+    return path.startsWith(`${cwd}/`) ? `./${path.slice(cwd.length + 1)}` : path
+}
+
+function activityTitle(title: string, status: unknown): string {
+    if (stringValue(status) != 'inProgress') return title
+    switch (title) {
+        case 'write':
+            return 'writing'
+        case 'delete':
+            return 'deleting'
+        case 'move':
+            return 'moving'
+        case 'command':
+            return 'running'
+        case 'tool call':
+            return 'calling'
+        default:
+            return title
+    }
+}
+
+function fileChangeSummaries(value: unknown, cwd: string | undefined): FileChangeSummary[] {
     if (!Array.isArray(value)) return []
     return value.flatMap(change => {
         const entry = recordValue(change)
         const path = stringValue(entry?.path)
-        const kind = stringValue(entry?.kind)
         if (!path) return []
-        return [kind ? `${kind} ${path}` : path]
+
+        const { adds, deletes } = diffStat(stringValue(entry?.diff))
+        const badge = diffBadge(adds, deletes)
+        const title = fileChangeVerb(entry?.kind)
+        const text = relativeDisplayPath(path, cwd)
+        return [{ adds, deletes, badge, title, text }]
     })
 }
 
@@ -177,7 +244,7 @@ function basename(path: string): string {
     return pieces.at(-1) ?? path
 }
 
-async function readAgentDefaults(): Promise<{ model?: string; effort?: ChatGPTReasoningEffort }> {
+async function readAgentDefaults(): Promise<{ model?: string; effort?: CodexReasoningEffort }> {
     const config = await readConfig()
     const agent = recordValue(config.agent)
     const model = stringValue(agent?.model)
@@ -225,7 +292,7 @@ function userInputText(value: unknown): string | undefined {
     return text || undefined
 }
 
-function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
+function bridgeFeedItem(item: unknown, cwd?: string): BridgeFeedItem | null {
     const entry = recordValue(item)
     const type = stringValue(entry?.type)
     if (!entry || !type) return null
@@ -237,7 +304,10 @@ function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
         }
         case 'agentMessage': {
             const text = stringValue(entry.text)
-            return text ? { kind: 'message', tone: 'assistant', text } : null
+            const phase = stringValue(entry.phase)
+            return text
+                ? { kind: 'message', tone: 'assistant', text, phase: phase == 'commentary' || phase == 'final_answer' ? phase : undefined }
+                : null
         }
         case 'reasoning': {
             const summary = stringArray(entry.summary).join('\n')
@@ -254,7 +324,7 @@ function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
             return {
                 kind: 'activity',
                 activity: 'trace',
-                title: 'command',
+                title: activityTitle('command', entry.status),
                 detail: detailLine([
                     statusLabel(entry.status),
                     formatDuration(numberValue(entry.durationMs)),
@@ -269,7 +339,7 @@ function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
             return {
                 kind: 'activity',
                 activity: 'trace',
-                title: 'tool call',
+                title: activityTitle('tool call', entry.status),
                 detail: detailLine([
                     name || undefined,
                     statusLabel(entry.status),
@@ -283,7 +353,7 @@ function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
             return {
                 kind: 'activity',
                 activity: 'trace',
-                title: 'tool call',
+                title: activityTitle('tool call', entry.status),
                 detail: detailLine([
                     tool,
                     statusLabel(entry.status),
@@ -306,14 +376,24 @@ function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
                 : null
         }
         case 'fileChange': {
-            const lines = changeLines(entry.changes)
-            if (!lines.length) return null
+            const changes = fileChangeSummaries(entry.changes, cwd)
+            if (!changes.length) return null
+            const first = changes[0]
+            const allSameTitle = changes.every(change => change.title == first.title)
+            const title = changes.length == 1
+                ? first.title
+                : allSameTitle ? `${first.title} ${changes.length} files` : `${changes.length} files`
+            const tail = changes.slice(1)
+                .map(change => [change.badge ? `[${change.badge}]` : undefined, change.text].filter(Boolean).join(' '))
+                .join(' ')
             return {
                 kind: 'activity',
                 activity: 'edit',
-                title: lines.length == 1 ? lines[0] : `${lines.length} files changed`,
+                badge: first.badge,
+                title,
                 detail: statusLabel(entry.status),
-                lines: lines.slice(0, 8),
+                text: [first.text, tail].filter(Boolean).join(' '),
+                lines: changes.map(change => [change.badge ? `[${change.badge}]` : undefined, change.text].filter(Boolean).join(' ')).slice(0, 8),
             }
         }
         default:
@@ -323,15 +403,29 @@ function bridgeFeedItem(item: unknown): BridgeFeedItem | null {
 
 export const bridgeFeedItemForTest = bridgeFeedItem
 
-function bridgeItemEvent(threadId: string, turnId: string, item: unknown): AgentBridgeEvent | null {
-    const normalized = bridgeFeedItem(item)
-    if (!normalized || normalized.kind != 'activity') return null
+function bridgeItemEvent(threadId: string, turnId: string, item: unknown, cwd?: string): AgentBridgeEvent | null {
+    const normalized = bridgeFeedItem(item, cwd)
+    if (!normalized) return null
+    if (normalized.kind == 'message') {
+        if (normalized.tone == 'user') return null
+        return {
+            type: 'message',
+            threadId,
+            turnId,
+            itemId: stringValue(recordValue(item)?.id),
+            tone: normalized.tone,
+            text: normalized.text,
+            phase: normalized.phase,
+        }
+    }
     return normalized.activity == 'trace'
-        ? { type: 'trace', threadId, turnId, title: normalized.title, detail: normalized.detail, text: normalized.text, lines: normalized.lines }
-        : { type: 'edit', threadId, turnId, title: normalized.title, detail: normalized.detail, text: normalized.text, lines: normalized.lines }
+        ? { type: 'trace', threadId, turnId, badge: normalized.badge, title: normalized.title, detail: normalized.detail, text: normalized.text, lines: normalized.lines }
+        : { type: 'edit', threadId, turnId, badge: normalized.badge, title: normalized.title, detail: normalized.detail, text: normalized.text, lines: normalized.lines }
 }
 
-function bridgeRecentThreads(threads: ChatGPTRecentThread[]): BridgeRecentThread[] {
+export const bridgeItemEventForTest = bridgeItemEvent
+
+function bridgeRecentThreads(threads: CodexRecentThread[]): BridgeRecentThread[] {
     return threads.map((thread) => ({
         threadId: thread.threadId,
         cwd: thread.cwd,
@@ -341,11 +435,11 @@ function bridgeRecentThreads(threads: ChatGPTRecentThread[]): BridgeRecentThread
     }))
 }
 
-function bridgeThreadSnapshot(thread: ChatGPTThreadSnapshot): BridgeThreadSnapshot {
+function bridgeThreadSnapshot(thread: CodexThreadSnapshot): BridgeThreadSnapshot {
     const items: BridgeFeedItem[] = []
     for (const turn of thread.turns) {
         for (const item of turn.items) {
-            const normalized = bridgeFeedItem(item)
+            const normalized = bridgeFeedItem(item, thread.cwd)
             if (normalized) items.push(normalized)
         }
         if (turn.status == 'failed' && turn.error) {
@@ -366,11 +460,12 @@ function bridgeThreadSnapshot(thread: ChatGPTThreadSnapshot): BridgeThreadSnapsh
 async function main(): Promise<void> {
     const args = parseArgs(process.argv.slice(2))
     const agentDefaults = await readAgentDefaults()
-    const client = await ChatGPTClient.create({
+    const client = await CodexClient.create({
         cwd: args.cwd,
         codexPath: process.env.CODEX,
-        sandbox: 'workspace-write',
+        sandbox: 'danger-full-access',
         model: agentDefaults.model,
+        clientInfo: { name: 'osmium', title: 'Osmium', version: '0.1.0' },
     })
 
     try {
@@ -398,7 +493,7 @@ async function main(): Promise<void> {
             if(['thread.started', 'thread.resumed', 'turn.started', 'delta'].includes(event.type))
                 emit(event as AgentBridgeEvent)
             else if(event.type == 'item.completed') {
-                const itemEvent = bridgeItemEvent(event.threadId, event.turnId, event.item)
+                const itemEvent = bridgeItemEvent(event.threadId, event.turnId, event.item, args.cwd)
                 if (itemEvent) emit(itemEvent)
             }
             else if(event.type == 'completed')

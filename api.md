@@ -104,21 +104,52 @@ swift renders native views, forwards events, and executes native intents.
 
 ### rows
 
-- `message { id, tone, text }`
-- `activity { id, activity, title, detail?, text?, lines[] }`
+- `message { id, tone, text, phase? }`
+- `activity { id, activity, badge?, title, detail?, text?, lines[] }`
+
+notes:
+
+- `phase` is `commentary | final_answer` when the upstream item provides it
+- `badge` is the leading monospace tag for compact metadata
+- trace rows use it for durations when present
+- edit rows use it for diffstat, like `+50 -100`
+
+## codex api
+
+for reuse outside osm, prefer a small codex app-server client instead of the agent bridge.
+
+module:
+
+- `src/agent/usecodex.ts`
+
+surface:
+
+- `CodexClient.create(options)`
+- `client.listModels(limit?)`
+- `client.listThreads(limit?)`
+- `client.readThread(threadId)`
+- `client.stream(input, options?)`
+- `client.close()`
+
+notes:
+
+- this owns raw codex app-server json-rpc
+- it returns codex thread/turn events
+- osm-specific row normalization stays in `src/agent/bridge.ts`
 
 ### editor contract
 
-- `osm edit` uses wrapped lines
+- the editor surface is a `wkwebview` hosting monaco
+- `osm edit` opens monaco with wrapped lines on
+- `osm edit <file> --hot <command>` stores `<command>` on that editor tab
 - the agent composer wraps to the visible input width
-- option-left/right and option-backspace/delete follow appkit word boundaries
-- cmd-left/right move to line start/end
-- cmd-up/down move to document start/end
+- save writes the latest mirrored webview buffer back to disk
+- if the editor has a hot command, save runs it in a dedicated osm terminal tab instead of the shell that launched `osm`
 
 ### config contract
 
-- `start_dir` is a top-level yaml string
-- when osmium needs a fallback cwd, it uses `start_dir`
+- `options.start_dir` is the yaml key for the default cwd
+- root-level `start_dir` is accepted only as a backwards-compat fallback
 
 ### agent feed contract
 

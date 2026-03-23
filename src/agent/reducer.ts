@@ -1,8 +1,8 @@
 import type { AgentBridgeEvent, BridgeThreadSnapshot, BridgeFeedItem } from './bridge.ts'
 
 export type AgentRow =
-  | { id: string; kind: 'message'; tone: 'assistant' | 'user' | 'status' | 'error'; text: string }
-  | { id: string; kind: 'activity'; activity: 'trace' | 'edit'; title: string; detail?: string; text?: string; lines: string[] }
+  | { id: string; kind: 'message'; tone: 'assistant' | 'user' | 'status' | 'error'; text: string; phase?: 'commentary' | 'final_answer' }
+  | { id: string; kind: 'activity'; activity: 'trace' | 'edit'; badge?: string; title: string; detail?: string; text?: string; lines: string[] }
 
 type ActiveAssistant = {
   turnId: string
@@ -82,9 +82,12 @@ function handleBridgeEvent(state: AgentReducerState, event: AgentBridgeEvent): A
       return { ...state, activeAssistant: null }
     case 'delta':
       return appendAssistantDelta(state, event)
+    case 'message':
+      return completeMessageItem(state, event)
     case 'trace':
       return appendActivity(state, {
         activity: 'trace',
+        badge: event.badge,
         title: event.title,
         detail: event.detail,
         text: event.text,
@@ -93,6 +96,7 @@ function handleBridgeEvent(state: AgentReducerState, event: AgentBridgeEvent): A
     case 'edit':
       return appendActivity(state, {
         activity: 'edit',
+        badge: event.badge,
         title: event.title,
         detail: event.detail,
         text: event.text,
@@ -178,6 +182,7 @@ function appendFeedItem(state: AgentReducerState, item: BridgeFeedItem): AgentRe
 
   return appendActivity(state, {
     activity: item.activity,
+    badge: item.badge,
     title: item.title,
     detail: item.detail,
     text: item.text,
@@ -189,6 +194,33 @@ function appendMessage(state: AgentReducerState, row: Omit<Extract<AgentRow, { k
   return {
     ...state,
     rows: [...state.rows, { id: nextRowId(state), kind: 'message', ...row }],
+  }
+}
+
+function completeMessageItem(
+  state: AgentReducerState,
+  event: Extract<AgentBridgeEvent, { type: 'message' }>,
+): AgentReducerState {
+  const active = state.activeAssistant
+  if (active?.turnId == event.turnId && active.itemId == event.itemId)
+    return updateMessageRow(
+      { ...state, activeAssistant: null },
+      active.rowId,
+      row => ({
+        ...row,
+        tone: event.tone,
+        text: event.text,
+        phase: event.phase ?? row.phase,
+      }),
+    )
+
+  return {
+    ...appendMessage(state, {
+      tone: event.tone,
+      text: event.text,
+      phase: event.phase,
+    }),
+    activeAssistant: null,
   }
 }
 
@@ -228,8 +260,8 @@ function ensureAssistantCompletedText(state: AgentReducerState, text: string): A
     return state
   const current = assistantRow(state)
   if (!current)
-    return appendMessage(state, { tone: 'assistant', text })
-  return updateMessageRow(state, current.id, row => ({ ...row, text }))
+    return appendMessage(state, { tone: 'assistant', text, phase: 'final_answer' })
+  return updateMessageRow(state, current.id, row => ({ ...row, text, phase: row.phase ?? 'final_answer' }))
 }
 
 function setAssistantMessage(state: AgentReducerState, text: string, tone: Extract<AgentRow, { kind: 'message' }>['tone']): AgentReducerState {

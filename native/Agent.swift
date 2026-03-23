@@ -7,8 +7,10 @@ struct AgentBridgeEvent: Codable {
     let turnId: String?
     let delta: String?
     let text: String?
+    let phase: String?
     let error: String?
     let message: String?
+    let badge: String?
     let title: String?
     let detail: String?
     let lines: [String]?
@@ -42,6 +44,8 @@ struct AgentThreadSnapshotItem: Codable {
     let kind: String
     let tone: String?
     let activity: String?
+    let phase: String?
+    let badge: String?
     let title: String?
     let detail: String?
     let text: String?

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { initialAgentState, reduceAgent } from './reducer.ts'
-import { bridgeFeedItemForTest, type BridgeFeedItem, type BridgeThreadSnapshot } from './bridge.ts'
+import { bridgeFeedItemForTest, bridgeItemEventForTest, type BridgeFeedItem, type BridgeThreadSnapshot } from './bridge.ts'
 
 describe('agent reducer', () => {
   test('submit sets title, appends user row, and marks busy', () => {
@@ -69,6 +69,120 @@ describe('agent reducer', () => {
     expect(item.kind).toBe('activity')
     expect(item.text).toHaveLength(140)
     expect(item.text?.endsWith('…')).toBe(true)
+  })
+
+  test('completed commentary message without deltas is appended to the feed', () => {
+    const state = reduceAgent(initialAgentState('/tmp/demo'), '/tmp/demo', {
+      type: 'bridgeEvent',
+      event: {
+        type: 'message',
+        threadId: 't1',
+        turnId: 'turn-1',
+        itemId: 'item-1',
+        tone: 'assistant',
+        text: 'checking files',
+        phase: 'commentary',
+      },
+    })
+
+    expect(state.rows).toEqual([
+      { id: '1', kind: 'message', tone: 'assistant', text: 'checking files', phase: 'commentary' },
+    ])
+  })
+
+  test('completed streamed user message is ignored to avoid echoing the prompt', () => {
+    const event = bridgeItemEventForTest('t1', 'turn-1', {
+      id: 'item-1',
+      type: 'userMessage',
+      content: [{ type: 'text', text: 'hello' }],
+    })
+
+    expect(event).toBeNull()
+  })
+
+  test('completed message updates the active streaming row with phase', () => {
+    const streamed = reduceAgent(
+      initialAgentState('/tmp/demo'),
+      '/tmp/demo',
+      { type: 'bridgeEvent', event: { type: 'delta', threadId: 't1', turnId: 'turn-1', itemId: 'item-1', delta: 'done' } },
+    )
+
+    const completed = reduceAgent(streamed, '/tmp/demo', {
+      type: 'bridgeEvent',
+      event: {
+        type: 'message',
+        threadId: 't1',
+        turnId: 'turn-1',
+        itemId: 'item-1',
+        tone: 'assistant',
+        text: 'done',
+        phase: 'final_answer',
+      },
+    })
+
+    expect(completed.rows).toEqual([
+      { id: '1', kind: 'message', tone: 'assistant', text: 'done', phase: 'final_answer' },
+    ])
+  })
+
+  test('file activity uses write-first formatting and cwd-relative paths', () => {
+    const item = bridgeFeedItemForTest({
+      type: 'fileChange',
+      status: 'completed',
+      changes: [{
+        path: '/users/brad/project/file1',
+        kind: { type: 'update', move_path: null },
+        diff: [
+          '--- a/file',
+          '+++ b/file',
+          '@@ -1,2 +1,3 @@',
+          '-old one',
+          '-old two',
+          '+new one',
+          '+new two',
+          '+new three',
+        ].join('\n'),
+      }],
+    }, '/users/brad/project') as BridgeFeedItem
+
+    expect(item).toEqual({
+      kind: 'activity',
+      activity: 'edit',
+      badge: '+3 -2',
+      title: 'write',
+      detail: 'completed',
+      text: './file1',
+      lines: ['[+3 -2] ./file1'],
+    })
+  })
+
+  test('multi-file writes use a grouped title and per-file diffstats', () => {
+    const item = bridgeFeedItemForTest({
+      type: 'fileChange',
+      status: 'inProgress',
+      changes: [
+        {
+          path: '/users/brad/project/file1',
+          kind: { type: 'update', move_path: null },
+          diff: ['--- a/file1', '+++ b/file1', '-old', '+new', '+newer'].join('\n'),
+        },
+        {
+          path: '/users/brad/project/file2',
+          kind: { type: 'update', move_path: null },
+          diff: ['--- a/file2', '+++ b/file2', '-a', '-b', '-c', '-d', '-e', '-f', '-g', '+z', '+y', '+x', '+w', '+v', '+u'].join('\n'),
+        },
+      ],
+    }, '/users/brad/project') as BridgeFeedItem
+
+    expect(item).toEqual({
+      kind: 'activity',
+      activity: 'edit',
+      badge: '+2 -1',
+      title: 'write 2 files',
+      detail: 'running',
+      text: './file1 [+6 -7] ./file2',
+      lines: ['[+2 -1] ./file1', '[+6 -7] ./file2'],
+    })
   })
 
   test('completed with error turns the active assistant row into an error row', () => {

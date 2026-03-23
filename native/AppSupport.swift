@@ -1,5 +1,4 @@
 import AppKit
-import CodeEditSourceEditor
 import Foundation
 
 extension NSView {
@@ -77,6 +76,7 @@ struct AppCommand: Decodable, Sendable {
     let type: String
     let cwd: String?
     let path: String?
+    let hot: String?
     let url: String?
 }
 
@@ -107,6 +107,20 @@ let cfg = Cfg.shared
 extension Cfg {
     var fontSize: CGFloat {
         float("options.font_size")
+    }
+
+    var terminalFontSize: CGFloat {
+        optionalString("options.terminal.font_size")
+            .flatMap(Double.init)
+            .map { CGFloat($0) }
+            ?? fontSize
+    }
+
+    var editorFontSize: CGFloat {
+        optionalString("options.editor.font_size")
+            .flatMap(Double.init)
+            .map { CGFloat($0) }
+            ?? fontSize
     }
 
     var monoFontName: String {
@@ -150,7 +164,10 @@ extension Cfg {
     }
 
     var startDirectory: String {
-        optionalString("start_dir")?
+        optionalString("options.start_dir")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .ifEmpty(NSHomeDirectory())
+            ?? optionalString("start_dir")?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .ifEmpty(NSHomeDirectory())
             ?? NSHomeDirectory()
@@ -158,6 +175,18 @@ extension Cfg {
 
     var font: NSFont {
         let s = fontSize
+        let n = monoFontName
+        return NSFont(name: n, size: s) ?? .monospacedSystemFont(ofSize: s, weight: .regular)
+    }
+
+    var terminalFont: NSFont {
+        let s = terminalFontSize
+        let n = monoFontName
+        return NSFont(name: n, size: s) ?? .monospacedSystemFont(ofSize: s, weight: .regular)
+    }
+
+    var editorFont: NSFont {
+        let s = editorFontSize
         let n = monoFontName
         return NSFont(name: n, size: s) ?? .monospacedSystemFont(ofSize: s, weight: .regular)
     }
@@ -184,28 +213,4 @@ extension Cfg {
         return NSFont(name: n, size: size) ?? .systemFont(ofSize: size, weight: weight)
     }
 
-    var editorTheme: EditorTheme {
-        func a(_ key: String, bold: Bool = false) -> EditorTheme.Attribute {
-            EditorTheme.Attribute(color: color(key), bold: bold)
-        }
-
-        return EditorTheme(
-            text: a("theme.editor_text"),
-            insertionPoint: color("theme.editor_cursor"),
-            invisibles: a("theme.editor_invisibles"),
-            background: color("theme.editor_bg"),
-            lineHighlight: color("theme.editor_line_highlight"),
-            selection: color("theme.editor_selection"),
-            keywords: a("theme.editor_keywords", bold: true),
-            commands: a("theme.editor_commands"),
-            types: a("theme.editor_types"),
-            attributes: a("theme.editor_attributes"),
-            variables: a("theme.editor_variables"),
-            values: a("theme.editor_values"),
-            numbers: a("theme.editor_numbers"),
-            strings: a("theme.editor_strings"),
-            characters: a("theme.editor_characters"),
-            comments: a("theme.editor_comments")
-        )
-    }
 }

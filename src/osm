@@ -1,2 +1,7 @@
 #!/usr/bin/env bun
-import './main.ts'
+import { main } from './main.ts'
+
+main().catch(e => {
+  process.stderr.write(e?.message ?? e ?? 'unknown error')
+  process.exitCode = 1
+})

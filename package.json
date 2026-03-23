@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "osm": "src" },
+  "bin": { "osm": "src/osm" },
   "scripts": {
     "build:native": "swift build --package-path native",
     "build:native:release": "swift build -c release --package-path native",

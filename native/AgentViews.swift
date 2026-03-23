@@ -215,7 +215,7 @@ final class AgentMessageView: NSView {
 final class AgentActivityView: NSView {
     private let lineLabel = NSTextField(labelWithString: "")
 
-    init(kind: AgentActivityKind, title: String, detail: String? = nil, text: String? = nil, lines: [String] = []) {
+    init(kind: AgentActivityKind, badge: String? = nil, title: String, detail: String? = nil, text: String? = nil, lines: [String] = []) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -226,7 +226,7 @@ final class AgentActivityView: NSView {
         lineLabel.lineBreakMode = .byTruncatingTail
         lineLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         lineLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        lineLabel.attributedStringValue = activityLine(kind: kind, title: title, detail: detail, text: text, lines: lines)
+        lineLabel.attributedStringValue = activityLine(kind: kind, badge: badge, title: title, detail: detail, text: text, lines: lines)
         addSubview(lineLabel)
 
         NSLayoutConstraint.activate([
@@ -245,6 +245,7 @@ final class AgentActivityView: NSView {
 
     private func activityLine(
         kind: AgentActivityKind,
+        badge: String?,
         title: String,
         detail: String?,
         text: String?,
@@ -256,16 +257,25 @@ final class AgentActivityView: NSView {
             ?? detailRemainder(detail)
             ?? title
         let status = activityStatus(detail)
-        let duration = activityDuration(detail)
+        let lead = badge ?? activityDuration(detail)
         let tagColor = activityTagColor(status)
 
         let output = NSMutableAttributedString()
-        if let duration {
-            output.append(tag("[\(duration)]", color: tagColor))
-            output.append(space(color: tagColor))
+        if kind == .edit {
+            output.append(tag("[\(title)]", color: tagColor))
+            if let lead {
+                output.append(space(color: tagColor))
+                output.append(tag("[\(lead)]", color: tagColor))
+            }
+            output.append(space(color: cfg.color("theme.overlay_subdued").withAlphaComponent(0.84)))
+        } else {
+            if let lead {
+                output.append(tag("[\(lead)]", color: tagColor))
+                output.append(space(color: tagColor))
+            }
+            output.append(tag("[\(title)]", color: tagColor))
+            output.append(space(color: cfg.color("theme.overlay_subdued").withAlphaComponent(0.84)))
         }
-        output.append(tag("[\(title)]", color: tagColor))
-        output.append(space(color: cfg.color("theme.overlay_subdued").withAlphaComponent(0.84)))
         output.append(NSAttributedString(string: body, attributes: [
             .font: cfg.mono(12),
             .foregroundColor: cfg.color("theme.overlay_text").withAlphaComponent(0.84),

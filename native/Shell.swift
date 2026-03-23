@@ -209,7 +209,7 @@ final class App: NSObject, NSApplicationDelegate {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let mc = self?.controller, !mc.hasTabs else { return }
-            mc.apply(AppCommand(type: "open-terminal", cwd: cfg.startDirectory, path: nil, url: nil))
+            mc.apply(AppCommand(type: "open-terminal", cwd: cfg.startDirectory, path: nil, hot: nil, url: nil))
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.controller?.focusSurface()

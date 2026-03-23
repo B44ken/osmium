@@ -264,11 +264,12 @@ final class AgentSurface: Surface {
     private func makeFeedView(for row: AgentBridgeRow) -> NSView {
         switch row.kind {
         case "message":
-            return AgentMessageView(text: row.text ?? "", tone: messageTone(from: row.tone) ?? .assistant)
+            return AgentMessageView(text: row.text ?? "", tone: messageTone(from: row.tone, phase: row.phase) ?? .assistant)
         case "activity":
             let kind = activityKind(from: row.activity) ?? .trace
             return AgentActivityView(
                 kind: kind,
+                badge: row.badge,
                 title: row.title ?? kind.label,
                 detail: row.detail,
                 text: row.text,
@@ -320,7 +321,10 @@ final class AgentSurface: Surface {
         }
     }
 
-    private func messageTone(from value: String?) -> AgentMessageTone? {
+    private func messageTone(from value: String?, phase: String? = nil) -> AgentMessageTone? {
+        if phase == "commentary" && (value == nil || value == "assistant") {
+            return .status
+        }
         switch value {
         case "assistant": return .assistant
         case "user": return .user

@@ -6,9 +6,6 @@ let package = Package(
   platforms: [ .macOS(.v13) ],
   products: [ .executable(name: "Osmium", targets: ["Osmium"]) ],
   dependencies: [
-    .package(path: "../.deps/CodeEditLanguages"),
-    .package(path: "../.deps/CodeEditSourceEditor"),
-    .package(path: "../.deps/CodeEditTextView"),
     .package(path: "../.deps/SwiftTerm")
   ],
   targets: [
@@ -18,7 +15,7 @@ let package = Package(
     ),
     .executableTarget(
       name: "Osmium",
-      dependencies: ["CodeEditLanguages", "CodeEditSourceEditor", "CodeEditTextView", "SwiftTerm", "OsmiumPickerSupport"],
+      dependencies: ["SwiftTerm", "OsmiumPickerSupport"],
       path: "./",
       exclude: ["Tests", "PickerSupport"]
     ),
