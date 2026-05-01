@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-  name: "App", platforms: [.macOS(.v26)], 
+  name: "Osmium", platforms: [.macOS(.v26)], 
   dependencies: [.package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.0.0")],
-  targets: [.executableTarget(name: "App", dependencies: ["SwiftTerm"], path: ".", exclude: ["osm", "App", "entry.ts"])],
+  targets: [.executableTarget(name: "Osmium", dependencies: ["SwiftTerm"], path: ".")],
 )
