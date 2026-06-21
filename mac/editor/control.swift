@@ -10,16 +10,18 @@ final class Keyboard {
     var monitor: Any?
 
     func on(_ key: String, _ callback: @escaping () -> Void) { callbacks.append((key, callback)) }
-    func handle() {
+    func handle() -> Bool {
         let combo = ((opt ? "opt " : "") + (key ?? "")).trimmingCharacters(in: .whitespacesAndNewlines)
-        for cb in callbacks { if cb.0 == combo { cb.1() } }
-        doSidebar = opt && key == nil
+        var matched = false
+        for cb in callbacks { if cb.0 == combo { cb.1(); matched = true } }
+        doSidebar = opt && (key == nil || key == "[" || key == "]")
+        return matched
     }
 
     init() {
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [self] ev in
-            if ev.type == .flagsChanged { self.opt = ev.modifierFlags.contains(.option); self.handle() }
-            if ev.type == .keyDown && !ev.isARepeat { self.key = keyCodes[ev.keyCode]; self.handle() }
+            if ev.type == .flagsChanged { self.opt = ev.modifierFlags.contains(.option); return self.handle() ? nil : ev }
+            if ev.type == .keyDown && !ev.isARepeat { self.key = keyCodes[ev.keyCode]; return self.handle() ? nil : ev }
             if ev.type == .keyUp { self.key = nil }
             return ev
         }
@@ -31,12 +33,14 @@ final class Pipe {
     var fh: FileHandle?
 
     func getOne() -> Cmd? {
-        if fh == nil { fh = FileHandle(forReadingAtPath: "/tmp/osm.fifo") }
+        if fh == nil {
+            mkfifo("/tmp/osm.fifo", 0o644)
+            fh = FileHandle(forReadingAtPath: "/tmp/osm.fifo")
+        }
 
         var buf = Data()
         while true {
-            guard let chunk = try? fh!.read(upToCount: 1) else { return nil }
-            if chunk.isEmpty { return nil }
+            guard let chunk = try? fh!.read(upToCount: 1), !chunk.isEmpty else { fh = nil; return nil }
             buf.append(chunk)
             if chunk.first == 0x0a { break }
         }

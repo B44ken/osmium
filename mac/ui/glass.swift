@@ -31,14 +31,16 @@ final class GlassWindow: NSWindow {
         center()
         isOpaque = false
         backgroundColor = .clear
-        contentView = GlassView(radius: radius, behind: true)
+        let glass = GlassView(radius: radius, behind: true)
+        glass.layer!.masksToBounds = true
+        contentView = glass
         makeKeyAndOrderFront(nil)
     }
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .leftMouseDown, let b = contentView?.bounds {
-            let resize = !b.insetBy(dx: 4, dy: 4).contains(event.locationInWindow)
-            let drag = !b.insetBy(dx: 12, dy: 12).contains(event.locationInWindow)
+            let resize = !b.insetBy(dx: 8, dy: 8).contains(event.locationInWindow)
+            let drag = !b.insetBy(dx: 16, dy: 16).contains(event.locationInWindow)
             if drag && !resize {
                 performDrag(with: event)
                 return
@@ -70,5 +72,14 @@ func setupMenu() {
     let item = NSMenuItem()
     item.submenu = quit
     bar.addItem(item)
+
+    let edit = NSMenu(title: "Edit")
+    edit.addItem(NSMenuItem(title: "Copy", action: Selector(("copy:")), keyEquivalent: "c"))
+    edit.addItem(NSMenuItem(title: "Paste", action: Selector(("paste:")), keyEquivalent: "v"))
+    edit.addItem(NSMenuItem(title: "Select All", action: Selector(("selectAll:")), keyEquivalent: "a"))
+    let editItem = NSMenuItem()
+    editItem.submenu = edit
+    bar.addItem(editItem)
+
     app.mainMenu = bar
 }

@@ -1,5 +1,6 @@
 .DS_Store
 osm.fifo
+osm.yaml
 node_modules
 mac/.build
-Package.resolved
+Package.resolvedlog.txt
