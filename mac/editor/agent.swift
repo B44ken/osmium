@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 
+func alog(_ s: String) { print("[agent \(Date().ISO8601Format())] \(s)") }   // stdout → log.txt (see main.swift)
+
 @MainActor @Observable
 final class AgentSession {
     enum Kind { case user, assistant, tool, error }
@@ -30,6 +32,7 @@ final class AgentSession {
         proc.currentDirectoryURL = URL(filePath: dir)   // agent.ts uses process.cwd()
         let arg = resume.map { " '\($0)'" } ?? ""
         proc.arguments = ["-ilc", "exec bun '\(Self.bridge)' '\(dir)'\(arg)"]   // -i: source ~/.zshrc for the user's PATH (bun, etc.)
+        alog("start cwd=\(dir) resume=\(resume ?? "nil") rows=\(rows.count)")
         proc.standardInput = stdin
         proc.standardOutput = stdout
         stdout.fileHandleForReading.readabilityHandler = { [weak self] h in
@@ -40,6 +43,7 @@ final class AgentSession {
 
         proc.terminationHandler = { [weak self] p in
             Task { @MainActor in
+                alog("terminated code=\(p.terminationStatus)")
                 self?.busy = false
                 self?.rows.append(Row(kind: .error, text: "agent exited (code \(p.terminationStatus))"))
             }
@@ -62,6 +66,7 @@ final class AgentSession {
     }
 
     private func send(_ obj: [String: Any]) {
+        alog("send \(obj) running=\(proc.isRunning)")
         guard proc.isRunning else {
             busy = false
             rows.append(Row(kind: .error, text: "agent not running"))
@@ -84,6 +89,7 @@ final class AgentSession {
     }
 
     private func handle(_ t: String, _ ev: [String: Any]) {
+        if t != "delta" { alog("recv \(ev)") }
         switch t {
         case "delta":
             let text = ev["text"] as? String ?? ""

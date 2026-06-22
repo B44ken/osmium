@@ -4,7 +4,8 @@ import { createInterface } from "node:readline"
 import { writeSync } from "node:fs"
 
 type msgOut = { t: "delta", text: string } | { t: "tool", name: string, input: any } | { t: "end", error: boolean } | { t: "ask", id: string, name: string, title?: string, input: any }
-const chat = (o: msgOut) => { writeSync(1, JSON.stringify(o) + "\n") }
+const log = (...a: any[]) => { writeSync(2, `[bridge ${new Date().toISOString()}] ${a.map(x => typeof x === "string" ? x : JSON.stringify(x)).join(" ")}\n`) }   // fd 2 → inherited stderr → log.txt
+const chat = (o: msgOut) => { if (o.t !== "delta") log("out", o); writeSync(1, JSON.stringify(o) + "\n") }
 
 const route = (model: string) => {
   if (model.startsWith('claudecode/'))
@@ -16,6 +17,7 @@ const route = (model: string) => {
 const { model, base, key } = route(config.agent.model)
 process.env.ANTHROPIC_BASE_URL = base!
 process.env.ANTHROPIC_AUTH_TOKEN = key!
+log("boot", { model, base, cwd: process.cwd(), resume: process.argv[3] ?? null, effort: config.agent.effort, perms: config.agent.permissions })
 
 let wake: ((m: any) => void) | null = null
 const queue: any[] = []
@@ -32,6 +34,7 @@ let interrupting = false
 
 createInterface({ input: process.stdin }).on("line", (line) => {
     const msg = JSON.parse(line)
+    log("in", msg)
     if (msg.t === "say") say(msg.text)
     if (msg.t === "perm") { pending.get(msg.id)?.(msg.allow); pending.delete(msg.id) }
     if (msg.t === "stop") { interrupting = true; q.interrupt() }
@@ -50,14 +53,22 @@ const q = query({
     }
 })
 
-for await (const ev of q as any) {
-    if (ev.type === "stream_event" && ev.event?.type === "content_block_delta" && ev.event.delta?.type === "text_delta")
-        chat({ t: "delta", text: ev.event.delta.text })
-    if (ev.type === "assistant")
-        for (const b of ev.message?.content ?? [])
-          if (b.type === "tool_use") chat({ t: "tool", name: b.name, input: b.input })
-    else if (ev.type === "result") {
-        chat({ t: "end", error: !interrupting && ev.subtype !== "success" })
-        interrupting = false
+try {
+    for await (const ev of q as any) {
+        if (ev.type === "stream_event") log("ev", ev.event?.type)
+        else log("ev", ev.type, ev.subtype ?? "")
+        if (ev.type === "stream_event" && ev.event?.type === "content_block_delta" && ev.event.delta?.type === "text_delta")
+            chat({ t: "delta", text: ev.event.delta.text })
+        if (ev.type === "assistant") {
+            for (const b of ev.message?.content ?? [])
+              if (b.type === "tool_use") chat({ t: "tool", name: b.name, input: b.input })
+        } else if (ev.type === "result") {
+            chat({ t: "end", error: !interrupting && ev.subtype !== "success" })
+            interrupting = false
+        }
     }
+    log("loop ended")   // query iterator completed — SDK considers the session done
+} catch (e: any) {
+    log("FATAL", e?.stack ?? String(e))
+    chat({ t: "end", error: true })
 }
