@@ -15,7 +15,7 @@ struct Sidebar: View {
         ScrollView {
             VStack(spacing: 8) {
                 ForEach($tabs.list, id: \.id) { $tab in
-                    row(tab.title, selected: tabs.curId == tab.id) { tabs.curId = tab.id }
+                    row(tilde(tab.title), selected: tabs.curId == tab.id, trailing: { statusDot(tab) }) { tabs.curId = tab.id }
                 }
                 if tabs.cur?.type == .agent {
                     if !past.isEmpty {
@@ -54,11 +54,38 @@ struct Sidebar: View {
     }
 
     private func row(_ text: String, selected: Bool, dim: Bool = false, _ tap: @escaping () -> Void) -> some View {
-        Text(text).lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading).padding(6)
+        row(text, selected: selected, dim: dim, trailing: { EmptyView() }, tap)
+    }
+
+    private func row(_ text: String, selected: Bool, dim: Bool = false,
+                     @ViewBuilder trailing: () -> some View, _ tap: @escaping () -> Void) -> some View {
+        HStack(spacing: 6) {
+            Text(text).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            trailing()
+        }.padding(6)
             .background(.white.opacity(selected ? 0.18 : 0.06), in: RoundedRectangle(cornerRadius: 6))
             .foregroundStyle(.white.opacity(dim ? 0.4 : 1)).contentShape(Rectangle())
             .onTapGesture(perform: tap)
+    }
+
+    private func tilde(_ p: String) -> String { (p as NSString).abbreviatingWithTildeInPath }
+
+    @ViewBuilder private func statusDot(_ tab: Tab) -> some View {
+        if case .agent(let s) = tab.content {
+            if s.busy { BreatheDot() }                                          // thinking → faint pulse
+            else if s.unseen { Circle().fill(.white.opacity(0.4)).frame(width: 6, height: 6) }   // done, not yet looked at
+        }
+    }
+}
+
+// faint breathing dot; own view so @State resets each time it (re)appears, restarting the loop
+private struct BreatheDot: View {
+    @State private var on = false
+    var body: some View {
+        Circle().fill(.white).frame(width: 6, height: 6)
+            .opacity(on ? 0.5 : 0.12)
+            .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: on)
+            .onAppear { on = true }
     }
 }
 

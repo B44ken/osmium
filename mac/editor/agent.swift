@@ -12,9 +12,18 @@ final class AgentSession {
         var text: String
     }
 
+    enum ButtonState { case send, pending, thinking }
+    struct Opt: Identifiable { let id = UUID(); let label, desc: String }
+    struct Question: Identifiable { let id = UUID(); let text, header: String; let options: [Opt]; let multi: Bool }
+
     var rows: [Row] = []
-    var busy = false
+    var buttonState: ButtonState = .send
     var ask: (id: String, name: String)? = nil
+    var askq: (id: String, questions: [Question])? = nil
+    var unseen = false      // turn finished while this tab wasn't being viewed
+    var viewing = false     // AgentSurface visible (i.e. current tab)
+
+    var busy: Bool { buttonState != .send }
 
     private let proc = Process()
     private let stdin = Foundation.Pipe()
@@ -44,7 +53,7 @@ final class AgentSession {
         proc.terminationHandler = { [weak self] p in
             Task { @MainActor in
                 alog("terminated code=\(p.terminationStatus)")
-                self?.busy = false
+                self?.buttonState = .send
                 self?.rows.append(Row(kind: .error, text: "agent exited (code \(p.terminationStatus))"))
             }
         }
@@ -55,7 +64,7 @@ final class AgentSession {
 
     func say(_ text: String) {
         rows.append(Row(kind: .user, text: text))
-        busy = true
+        buttonState = .pending
         send(["t": "say", "text": text])
     }
 
@@ -65,10 +74,16 @@ final class AgentSession {
         ask = nil
     }
 
+    func answerQuestions(_ picks: [String: [String]]) {
+        guard let a = askq else { return }
+        send(["t": "answer", "id": a.id, "answers": picks.mapValues { $0.joined(separator: ", ") }])
+        askq = nil
+    }
+
     private func send(_ obj: [String: Any]) {
         alog("send \(obj) running=\(proc.isRunning)")
         guard proc.isRunning else {
-            busy = false
+            buttonState = .send
             rows.append(Row(kind: .error, text: "agent not running"))
             return
         }
@@ -92,18 +107,32 @@ final class AgentSession {
         if t != "delta" { alog("recv \(ev)") }
         switch t {
         case "delta":
-            let text = ev["text"] as? String ?? ""
+            buttonState = .thinking
+            let think = ev["think"] as? String ?? ""
+            let response = ev["response"] as? String ?? ""
+            if think.isEmpty && response.isEmpty { return }
+
+            let text = think.isEmpty ? response : think
             if case .assistant = rows.last?.kind {
                 rows[rows.count - 1].text += text
             } else {
                 rows.append(Row(kind: .assistant, text: text))
             }
         case "tool":
+            buttonState = .thinking   // leave .pending on first part of any kind
             rows.append(Row(kind: .tool, text: Chats.toolLine(ev["name"] as? String ?? "tool", ev["input"])))
         case "ask":
             ask = (ev["id"] as? String ?? "", ev["name"] as? String ?? "tool")
+        case "askq":
+            buttonState = .thinking
+            askq = (ev["id"] as? String ?? "", (ev["questions"] as? [[String: Any]] ?? []).map {
+                Question(text: $0["question"] as? String ?? "", header: $0["header"] as? String ?? "",
+                         options: ($0["options"] as? [[String: Any]] ?? []).map { Opt(label: $0["label"] as? String ?? "", desc: $0["description"] as? String ?? "") },
+                         multi: $0["multiSelect"] as? Bool ?? false)
+            })
         case "end":
-            busy = false
+            buttonState = .send
+            if !viewing { unseen = true }
             if ev["error"] as? Bool == true { rows.append(Row(kind: .error, text: "turn failed")) }
         default: break
         }
@@ -196,6 +225,7 @@ struct PastChat: Identifiable {
 struct AgentSurface: View {
     @Bindable var session: AgentSession
     @State private var input = ""
+    @State private var atBottom = true
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -205,9 +235,12 @@ struct AgentSurface: View {
                     VStack(alignment: .leading, spacing: 16) {
                         ForEach(session.rows) { RowView(row: $0) }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
-                        .font(.system(size: cfg.font.size))
-                }.onChange(of: session.rows.last?.text) {
-                    if let l = session.rows.last { proxy.scrollTo(l.id, anchor: .bottom) }
+                        .font(.system(size: cfg.font.size)).textSelection(.enabled)
+                }.onScrollGeometryChange(for: Bool.self) {
+                    $0.contentOffset.y >= $0.contentSize.height - $0.containerSize.height - 24
+                } action: { _, v in atBottom = v }
+                .onChange(of: session.rows.last?.text) {
+                    if atBottom, let l = session.rows.last { proxy.scrollTo(l.id, anchor: .bottom) }
                 }.onAppear {
                     if let l = session.rows.last { DispatchQueue.main.async { proxy.scrollTo(l.id, anchor: .bottom) } }
                 }
@@ -222,19 +255,72 @@ struct AgentSurface: View {
                 }.padding(8).background(.white.opacity(0.06))
             }
 
+            if let q = session.askq {
+                QuestionForm(questions: q.questions, onSubmit: session.answerQuestions,
+                             onCancel: { session.stop(); session.askq = nil })
+            }
+
             HStack(spacing: 8) {
                 TextField("message", text: $input).textFieldStyle(.plain).onSubmit(sendOrStop).focused($inputFocused)
-                Button(session.busy ? "thinking" : "send", action: sendOrStop)
+                let buttonText = switch session.buttonState {
+                case .send: "send"
+                case .pending: "pending"
+                case .thinking: "thinking"
+                }
+                Button(buttonText, action: sendOrStop)
             }.padding(8).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 4))
-        }.padding(.horizontal, 8).padding(.bottom, 8).onAppear { DispatchQueue.main.async { inputFocused = true } }
+        }.padding(.horizontal, 8).padding(.bottom, 8)
+            .onAppear { session.viewing = true; session.unseen = false; DispatchQueue.main.async { inputFocused = true } }
+            .onDisappear { session.viewing = false }
     }
 
     private func sendOrStop() {
-        if session.busy { session.stop(); return }
+        if session.buttonState != .send { session.stop(); return }
         let msg = input.trimmingCharacters(in: .whitespacesAndNewlines)
         if msg.isEmpty { return }
         session.say(msg)
         input = ""
+    }
+
+    struct QuestionForm: View {
+        let questions: [AgentSession.Question]
+        let onSubmit: ([String: [String]]) -> Void
+        let onCancel: () -> Void
+        @State private var picks: [String: Set<String>] = [:]   // keyed by question text → selected labels
+
+        var complete: Bool { questions.allSatisfy { !(picks[$0.text] ?? []).isEmpty } }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(questions) { q in
+                    if !q.header.isEmpty { Text(q.header).font(.caption).foregroundStyle(.white.opacity(0.6)) }
+                    Text(q.text).foregroundStyle(.white)
+                    HStack(spacing: 8) {
+                        ForEach(q.options) { opt in
+                            let on = picks[q.text]?.contains(opt.label) ?? false
+                            Button { toggle(q, opt.label) } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(opt.label)
+                                    if !opt.desc.isEmpty { Text(opt.desc).font(.caption).foregroundStyle(.white.opacity(0.55)) }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }.buttonStyle(.borderedProminent).tint(on ? .blue : .gray)
+                        }
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("cancel", action: onCancel)
+                    Button("submit") { onSubmit(picks.mapValues(Array.init)) }
+                        .disabled(!complete).keyboardShortcut(.defaultAction)
+                }
+            }.padding(8).background(.white.opacity(0.06))
+        }
+
+        func toggle(_ q: AgentSession.Question, _ opt: String) {
+            var s = picks[q.text] ?? []
+            if q.multi { if !s.insert(opt).inserted { s.remove(opt) } } else { s = [opt] }
+            picks[q.text] = s
+        }
     }
 
     struct RowView: View {
