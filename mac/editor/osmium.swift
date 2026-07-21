@@ -52,7 +52,7 @@ final class Osmium {
 
         Thread { while true { self.readPipe() } }.start()
 
-        keyb.on("opt n", { self.newTab(type: .terminal, path: "~", id: UUID().uuidString) })
+        keyb.on("opt t", { self.newTab(type: .terminal, path: "~", id: UUID().uuidString) })
         keyb.on("opt ]", { self.tabs.swap(off: 1) })
         keyb.on("opt [", { self.tabs.swap(off: -1) })
         keyb.on("opt w", { self.closeTab() })
