@@ -1,6 +1,5 @@
 .DS_Store
 osm.fifo
-osm.yaml
 log.txt
 node_modules
 mac/.build

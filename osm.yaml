@@ -1,0 +1,20 @@
+font:
+  mono: 'Menlo'
+  sans: 'Inter'
+  size: 14
+  sizes:
+    term: 15
+    edit: 14
+    agent: 14
+window:
+  width: 900
+  height: 600
+  sidebar:
+    width: 250
+    slidedelay: 0.12
+    slideduration: 0.06
+agent:
+  permissions: 'auto'
+  effort: 'xhigh'
+  model: 'claude/opus'
+  keys: {}

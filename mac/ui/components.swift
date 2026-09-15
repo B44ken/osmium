@@ -9,7 +9,7 @@ struct Sidebar: View {
     var onPick: (PastChat) -> Void
     var onOpen: (String) -> Void
     @State private var past: [PastChat] = []
-    @State private var files: [Files.Entry] = []
+    @State private var browser = Files.Browser()
 
     var body: some View {
         ScrollView {
@@ -22,30 +22,38 @@ struct Sidebar: View {
                         heading("PAST CHATS")
                         ForEach(past) { chat in row(chat.title, selected: false) { onPick(chat) } }
                     }
-                } else if !files.isEmpty {
+                } else if !browser.dir.isEmpty {
                     heading("FILES")
-                    ForEach(files) { f in
+                    if !browser.atRoot { row("../", selected: false, dim: true) { browser.up() } }
+                    ForEach(browser.entries) { f in
                         row(f.isDir ? "\(f.name)/" : f.name, selected: false, dim: f.isDir) {
-                            if !f.isDir { onOpen(f.path) }
+                            if f.isDir { browser.open(f.path) } else { onOpen(f.path) }
                         }
                     }
                 }
             }.padding(12)
         }
-        .frame(width: 250).frame(maxHeight: .infinity, alignment: .top)
+        .frame(width: cfg.window.sidebar.width).frame(maxHeight: .infinity, alignment: .top)
         .background(GlassBg())
         .padding(6)
-        .offset(x: keyboard.doSidebar ? 0 : -262)
-        .animation(.easeOut(duration: 0.12), value: keyboard.doSidebar)
+        .offset(x: keyboard.doSidebar ? 0 : -(cfg.window.sidebar.width + 12))
+        .animation(.easeOut(duration: cfg.window.sidebar.slideduration), value: keyboard.doSidebar)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: keyboard.doSidebar) { _, open in if open { load() } }
+        .task(id: keyboard.doSidebar) {
+            guard keyboard.doSidebar,
+                  (try? await Task.sleep(for: .seconds(cfg.window.sidebar.slidedelay))) != nil else { return }
+            load()
+        }
         .onChange(of: tabs.curId) { if keyboard.doSidebar { load() } }   // refresh while cycling tabs
     }
 
+    // browsing resets to the tab's live cwd on every open and tab switch: the FILES list means
+    // "what's in this tab's directory", so a browsed path must not outlive the visit
     private func load() {
-        guard let tab = tabs.cur else { past = []; files = []; return }
-        if tab.type == .agent { past = Chats.list(cwd: tab.cwd); files = [] }
-        else { files = Files.list(Files.cwd(tab)); past = [] }
+        tabs.syncCwd()
+        guard let tab = tabs.cur else { past = []; browser = Files.Browser(); return }
+        if tab.type == .agent { past = Chats.list(cwd: tab.cwd); browser = Files.Browser() }
+        else { browser.open(tab.cwd); past = [] }
     }
 
     private func heading(_ text: String) -> some View {
@@ -93,16 +101,19 @@ struct Viewer: View {
     @Bindable var tabs: Tabs
     var body: some View {
         ZStack {
+            // every tab stays mounted and keeps its size: unmounting hands the view a zero frame on the
+            // way back in, and swiftterm answers a 2x1 grid by reflowing the buffer away and SIGWINCHing the shell
             ForEach(tabs.list, id: \.id) { tab in
-                if tabs.curId == tab.id {
-                    Group {
-                        switch tab.content {
-                        case .terminal(let term): TermView(term: term)
-                        case .web(let web):       WebView(web: web)
-                        case .agent(let session): AgentSurface(session: session)
-                        }
+                let active = tabs.curId == tab.id
+                Group {
+                    switch tab.content {
+                    case .terminal(let term): TermView(term: term, active: active)
+                    case .web(let web):       WebView(web: web, active: active)
+                    case .agent(let session): AgentSurface(session: session, active: active)
                     }
                 }
+                .opacity(active ? 1 : 0)
+                .allowsHitTesting(active)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -126,22 +137,25 @@ struct Viewer: View {
 
 struct TermView: View {
     let term: LocalProcessTerminalView
+    let active: Bool
     var body: some View {
-        TerminalRepresentable(term: term)
-            .padding(6).background(Color.black)
+        TerminalRepresentable(term: term, active: active)
+            .padding(6).background(SwiftUI.Color(nsColor: OneDark.bg))
             .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
 
 private struct TerminalRepresentable: NSViewRepresentable {
     let term: LocalProcessTerminalView
+    let active: Bool
     func makeNSView(context: Context) -> LocalProcessTerminalView { term }
-    func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) { focus(nsView) }
+    func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) { if active { focus(nsView) } }
 }
 
 struct WebView: NSViewRepresentable {
     let web: WKWebView
+    let active: Bool
     func makeNSView(context: Context) -> WKWebView { web }
-    func updateNSView(_ nsView: WKWebView, context: Context) { focus(nsView) }
+    func updateNSView(_ nsView: WKWebView, context: Context) { if active { focus(nsView) } }
 }
 

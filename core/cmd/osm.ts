@@ -31,7 +31,9 @@ const establish = async (): Promise<boolean> => {
 const ensureEditServer = async () => {
   const up = async () => fetch("http://127.0.0.1:7223/", { signal: AbortSignal.timeout(300) }).then(() => true, () => false)
   if (await up()) return
-  spawn([process.execPath, `${base}core/web/server.ts`], { stdout: "inherit", stderr: "inherit" })
+  // --hot: this server outlives the shell that spawned it, so without a watcher it would serve the
+  // bundle it booted with forever. reloads in place, keeping open lsp sockets and the port.
+  spawn([process.execPath, "--hot", `${base}core/web/server.ts`], { stdout: "inherit", stderr: "inherit" })
   for (let i = 0; i < 50; i++) { if (await up()) return; await sleep(100) }
 }
 

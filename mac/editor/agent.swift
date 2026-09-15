@@ -5,11 +5,12 @@ func alog(_ s: String) { print("[agent \(Date().ISO8601Format())] \(s)") }   // 
 
 @MainActor @Observable
 final class AgentSession {
-    enum Kind { case user, assistant, tool, error }
-    struct Row: Identifiable {
+    enum Kind: String, Codable { case user, assistant, tool, error }
+    struct Row: Identifiable, Codable {
         let id = UUID()
         let kind: Kind
         var text: String
+        enum CodingKeys: String, CodingKey { case kind, text }
     }
 
     enum ButtonState { case send, pending, thinking }
@@ -29,19 +30,25 @@ final class AgentSession {
     private let stdin = Foundation.Pipe()
     private var buf = Data()
 
+    private var chatId = ""      // our chat id (== tab id), names the transcript we own
+    private var sessionId = ""   // the backend's own id, replayed back to it on resume
+    private var spec = ""        // provider/model this chat was started with
+    private var cwd = ""
+
     private static let bridge = URL(filePath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appending(path: "core/agent/index.ts").path
 
-    func start(cwd: String, resume: String? = nil) {
+    func start(cwd: String, id: String, chat: PastChat? = nil) {
         let dir = ((cwd.isEmpty ? "~" : cwd) as NSString).expandingTildeInPath
-        if let resume { rows = Chats.rows(cwd: cwd, id: resume) }
+        chatId = id
+        self.cwd = dir
+        if let chat { rows = Chats.rows(chat); sessionId = chat.session; spec = chat.spec }
         let stdout = Foundation.Pipe()
         proc.executableURL = URL(filePath: "/bin/zsh")
         proc.currentDirectoryURL = URL(filePath: dir)   // agent.ts uses process.cwd()
-        let arg = resume.map { " '\($0)'" } ?? ""
-        proc.arguments = ["-ilc", "exec bun '\(Self.bridge)' '\(dir)'\(arg)"]   // -i: source ~/.zshrc for the user's PATH (bun, etc.)
-        alog("start cwd=\(dir) resume=\(resume ?? "nil") rows=\(rows.count)")
+        proc.arguments = ["-ilc", "exec bun '\(Self.bridge)' '\(dir)' '\(sessionId)' '\(spec)'"]   // -i: source ~/.zshrc for the user's PATH (bun, etc.)
+        alog("start cwd=\(dir) resume=\(sessionId) spec=\(spec) rows=\(rows.count)")
         proc.standardInput = stdin
         proc.standardOutput = stdout
         stdout.fileHandleForReading.readabilityHandler = { [weak self] h in
@@ -134,6 +141,10 @@ final class AgentSession {
             buttonState = .send
             if !viewing { unseen = true }
             if ev["error"] as? Bool == true { rows.append(Row(kind: .error, text: "turn failed")) }
+            Chats.save(id: chatId, session: sessionId, spec: spec, cwd: cwd, rows: rows)
+        case "session":
+            sessionId = ev["id"] as? String ?? ""
+            spec = ev["spec"] as? String ?? ""
         default: break
         }
     }
@@ -144,9 +155,53 @@ struct PastChat: Identifiable {
     let title: String
     let date: Date
     let cwd: String
+    let session: String   // backend's own id, passed back to the bridge to resume
+    let spec: String      // provider/model, so a chat resumes on the backend that created it
+    let legacy: Bool      // pre-dates our own transcripts; rows come from ~/.claude
 }
 
 @MainActor enum Chats {
+    // we keep our own transcripts: every backend stores history differently (claude writes jsonl,
+    // copilot keeps a sqlite store), and only the backend's session id is worth asking it for.
+    static let dir = URL(filePath: ("~/.osm/chats" as NSString).expandingTildeInPath)
+
+    struct Stored: Codable {
+        let id, session, spec, cwd, title: String
+        let updated: Date
+        let rows: [AgentSession.Row]
+    }
+
+    private static let coder = (enc: { let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e }(),
+                                dec: { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d }())
+
+    static func save(id: String, session: String, spec: String, cwd: String, rows: [AgentSession.Row]) {
+        guard let title = rows.first(where: { $0.kind == .user })?.text else { return }   // nothing said yet
+        let s = Stored(id: id, session: session, spec: spec, cwd: cwd,
+                       title: String(title.prefix(80)), updated: Date(), rows: rows)
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try! coder.enc.encode(s).write(to: dir.appending(path: "\(id).json"), options: .atomic)
+    }
+
+    static func list(cwd: String) -> [PastChat] {
+        let want = ((cwd.isEmpty ? "~" : cwd) as NSString).expandingTildeInPath
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        let ours = files.filter { $0.pathExtension == "json" }
+            .map { try! coder.dec.decode(Stored.self, from: Data(contentsOf: $0)) }   // written atomically, so never half-parsed
+            .filter { $0.cwd == want }
+            .map { PastChat(id: $0.id, title: $0.title, date: $0.updated, cwd: $0.cwd,
+                            session: $0.session, spec: $0.spec, legacy: false) }
+        let taken = Set(ours.map(\.id))   // a resumed legacy chat now lives in both stores; ours wins
+        return (ours + claudeList(cwd: cwd).filter { !taken.contains($0.id) }).sorted { $0.date > $1.date }
+    }
+
+    static func rows(_ chat: PastChat) -> [AgentSession.Row] {
+        if chat.legacy { return claudeRows(cwd: chat.cwd, id: chat.id) }
+        let url = dir.appending(path: "\(chat.id).json")
+        return try! coder.dec.decode(Stored.self, from: Data(contentsOf: url)).rows
+    }
+
+    // --- transcripts written by claude before we kept our own ---
+
     static func projectDir(_ cwd: String) -> URL {
         let dir = ((cwd.isEmpty ? "~" : cwd) as NSString).expandingTildeInPath
         let slug = String(dir.map { $0 == "/" || $0 == "." ? "-" : $0 })
@@ -154,7 +209,7 @@ struct PastChat: Identifiable {
             path: slug)
     }
 
-    static func list(cwd: String) -> [PastChat] {
+    static func claudeList(cwd: String) -> [PastChat] {
         let keys: [URLResourceKey] = [.contentModificationDateKey]
         let files =
             (try? FileManager.default.contentsOfDirectory(
@@ -164,9 +219,10 @@ struct PastChat: Identifiable {
             let date =
                 (try? url.resourceValues(forKeys: Set(keys)).contentModificationDate)
                 ?? .distantPast
-            return PastChat(
-                id: url.deletingPathExtension().lastPathComponent, title: title, date: date, cwd: cwd)
-        }.sorted { $0.date > $1.date }
+            let id = url.deletingPathExtension().lastPathComponent
+            return PastChat(id: id, title: title, date: date, cwd: cwd,
+                            session: id, spec: "", legacy: true)   // empty spec → bridge falls back to osm.yaml
+        }
     }
 
     static func firstPrompt(_ url: URL) -> String? {
@@ -181,7 +237,7 @@ struct PastChat: Identifiable {
         return nil
     }
 
-    static func rows(cwd: String, id: String) -> [AgentSession.Row] {
+    static func claudeRows(cwd: String, id: String) -> [AgentSession.Row] {
         let url = projectDir(cwd).appending(path: "\(id).jsonl")
         guard let body = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         var out: [AgentSession.Row] = []
@@ -224,6 +280,7 @@ struct PastChat: Identifiable {
 
 struct AgentSurface: View {
     @Bindable var session: AgentSession
+    let active: Bool
     @State private var input = ""
     @State private var atBottom = true
     @FocusState private var inputFocused: Bool
@@ -235,7 +292,7 @@ struct AgentSurface: View {
                     VStack(alignment: .leading, spacing: 16) {
                         ForEach(session.rows) { RowView(row: $0) }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
-                        .font(.system(size: cfg.font.size)).textSelection(.enabled)
+                        .font(.system(size: Fonts.shared.size(.agent))).textSelection(.enabled)
                 }.onScrollGeometryChange(for: Bool.self) {
                     $0.contentOffset.y >= $0.contentSize.height - $0.containerSize.height - 24
                 } action: { _, v in atBottom = v }
@@ -270,8 +327,11 @@ struct AgentSurface: View {
                 Button(buttonText, action: sendOrStop)
             }.padding(8).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 4))
         }.padding(.horizontal, 8).padding(.bottom, 8)
-            .onAppear { session.viewing = true; session.unseen = false; DispatchQueue.main.async { inputFocused = true } }
-            .onDisappear { session.viewing = false }
+            // every tab stays mounted, so "being viewed" tracks the current tab, not appearance
+            .onChange(of: active, initial: true) { _, on in
+                session.viewing = on
+                if on { session.unseen = false; DispatchQueue.main.async { inputFocused = true } }
+            }
     }
 
     private func sendOrStop() {
@@ -335,7 +395,7 @@ struct AgentSurface: View {
                 Text(.init(row.text)).foregroundStyle(.white).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .tool:
-                Text(row.text).font(.system(size: cfg.font.size, design: .monospaced))
+                Text(row.text).font(.custom(cfg.font.mono, size: Fonts.shared.size(.agent)))
                     .foregroundStyle(.white.opacity(0.7)).lineLimit(1).truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .error:

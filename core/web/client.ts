@@ -1,24 +1,53 @@
 import { basicSetup } from "codemirror"
-import { EditorState } from "@codemirror/state"
+import { EditorState, Compartment } from "@codemirror/state"
 import { EditorView, keymap, crosshairCursor } from "@codemirror/view"
 import { indentWithTab } from "@codemirror/commands"
 import { javascript } from "@codemirror/lang-javascript"
 import { python } from "@codemirror/lang-python"
+import { cpp } from "@codemirror/lang-cpp"
+import { yaml } from "@codemirror/lang-yaml"
 import { oneDark } from "@codemirror/theme-one-dark"
 import { languageServer } from "codemirror-languageserver"
-import config from '../../osm.yaml'
+
+// injected per request by server.ts — only the font, so keys never reach the browser
+declare global {
+    interface Window {
+        FONT: { mono: string; sans: string; size: number }
+        osmFont: (size: number) => void
+    }
+}
+
+const fontComp = new Compartment()
+const fontTheme = (size: number) =>
+    EditorView.theme({ '&': { fontSize: `${size}px` }, '.cm-scroller': { fontFamily: window.FONT.mono } })
 
 const path = new URLSearchParams(location.search).get("path") ?? "/tmp/untitled.ts"
 const ext = path.slice(path.lastIndexOf(".") + 1)
 const dir = path.slice(0, path.lastIndexOf("/"))
 
-let lang
-if (['js', 'jsx', 'ts', 'tsx'].includes(ext)) lang = javascript({ typescript: true, jsx: ext === "tsx" })
-if (ext === "py") lang = python()
+// lsp language ids, not file extensions: this is what `textDocument/didOpen` must carry, and it is
+// also what server.ts keys its language servers on — so the mapping lives here only
+const ids: Record<string, string> = {
+    ts: 'typescript', mts: 'typescript', cts: 'typescript', tsx: 'typescriptreact',
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascriptreact',
+    py: 'python', pyi: 'python',
+    c: 'c', h: 'c',
+    cc: 'cpp', cpp: 'cpp', cxx: 'cpp', hh: 'cpp', hpp: 'cpp', hxx: 'cpp',
+    yaml: 'yaml', yml: 'yaml',
+}
+const id = ids[ext]
 
-const ls = languageServer({
-    serverUri: `ws://${location.host}/lsp?lang=${ext}`, rootUri: `file://${dir}`, documentUri: `file://${path}`, languageId: ext, workspaceFolders: [{ name: dir, uri: `file://${dir}` }]
-})
+const lang = id === 'python' ? python()
+    : id === 'c' || id === 'cpp' ? cpp()
+    : id === 'yaml' ? yaml()
+    : id ? javascript({ typescript: id.startsWith('typescript'), jsx: id.endsWith('react') })
+        : undefined
+
+// an extension with no server gets no socket at all — opening one only to be closed 1008 leaves a
+// half-wired client that then writes didOpen into a dead socket
+const ls = id ? languageServer({
+    serverUri: `ws://${location.host}/lsp?lang=${id}`, rootUri: `file://${dir}`, documentUri: `file://${path}`, languageId: id, workspaceFolders: [{ name: dir, uri: `file://${dir}` }]
+}) : []
 
 const save = (view: EditorView) =>
     Boolean(fetch(`/file?path=${encodeURIComponent(path)}`, { method: "POST", body: view.state.doc.toString() }))
@@ -28,10 +57,13 @@ const text = await (await fetch(`/file?path=${encodeURIComponent(path)}`)).text(
 const view = new EditorView({
     parent: document.body, state: EditorState.create({
         doc: text, extensions: [
-            basicSetup, oneDark, ls, EditorView.lineWrapping, crosshairCursor(),
-            EditorView.theme({'&': { fontSize: `${config.font.size}px` }, '.cm-scroller': { fontFamily: config.font.mono } }),
+            basicSetup, oneDark, EditorView.lineWrapping, crosshairCursor(),
+            fontComp.of(fontTheme(window.FONT.size)),
             keymap.of([{ key: "Mod-s", run: save }, {}, indentWithTab]),
-        ].concat(lang ? [lang] : [])
+        ].concat(lang ? [lang] : [], ls)
     })
 })
 view.focus()
+
+// called by the app on opt+/opt-
+window.osmFont = size => view.dispatch({ effects: fontComp.reconfigure(fontTheme(size)) })

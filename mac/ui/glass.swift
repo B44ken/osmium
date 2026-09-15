@@ -18,13 +18,15 @@ final class GlassView: NSVisualEffectView {
     required init?(coder: NSCoder) { fatalError() }
 }
 
-final class GlassWindow: NSWindow {
+final class GlassWindow: NSWindow, NSWindowDelegate {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
-    init(size: CGSize, radius: CGFloat = 12) {
+    // osm.yaml carries the default size; the size saved on the last resize is layered over it,
+    // so the window restores itself without the call site's help
+    init(radius: CGFloat = 12) {
         super.init(
-            contentRect: NSRect(origin: .zero, size: size),
+            contentRect: NSRect(origin: .zero, size: CGSize(width: cfg.window.width, height: cfg.window.height)),
             styleMask: [.borderless, .resizable],
             backing: .buffered, defer: false
         )
@@ -34,7 +36,13 @@ final class GlassWindow: NSWindow {
         let glass = GlassView(radius: radius, behind: true)
         glass.layer!.masksToBounds = true
         contentView = glass
+        delegate = self
         makeKeyAndOrderFront(nil)
+    }
+
+    // end of the drag, not every frame of it: one yaml write per resize
+    func windowDidEndLiveResize(_ note: Notification) {
+        persist(["window": ["width": Int(frame.width), "height": Int(frame.height)]])
     }
 
     override func sendEvent(_ event: NSEvent) {

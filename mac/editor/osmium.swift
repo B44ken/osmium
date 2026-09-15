@@ -15,23 +15,38 @@ final class Osmium {
         Task { try? await Task.sleep(nanoseconds: UInt64(2e6)) }
     }
 
-    func newTab(type: TabType, path: String, id: String, resume: String? = nil) {
+    func newTab(type: TabType, path: String, id: String, chat: PastChat? = nil) {
+        let dir = type == .editor ? (path as NSString).deletingLastPathComponent : path
+        let cwd = (dir as NSString).expandingTildeInPath   // zsh won't expand a literal "~" handed to it as a working directory
         let content: TabContent
         switch type {
-        case .terminal: content = .makeTerm()
+        case .terminal: content = .makeTerm(cwd)
         case .web:      content = .makeWeb(path)
-        case .agent:    content = .makeAgent(path, resume: resume)
+        case .agent:    content = .makeAgent(path, id: id, chat: chat)
         case .editor:   content = .makeEdit(path)
         }
         if case .terminal(let term) = content { term.processDelegate = self }
-        let cwd = type == .editor ? (path as NSString).deletingLastPathComponent : path
         tabs.list.append(Tab(id: id, type: type, title: path, cwd: cwd, content: content))
         tabs.curId = id
     }
 
     func resumeChat(_ chat: PastChat) {
         if tabs.list.contains(where: { $0.id == chat.id }) { tabs.curId = chat.id; return }
-        newTab(type: .agent, path: chat.cwd, id: chat.id, resume: chat.id)
+        newTab(type: .agent, path: chat.cwd, id: chat.id, chat: chat)
+    }
+
+    // opt+/opt- resizes every tab of the current tab's type; agent panes redraw off the observable
+    func bumpFont(_ delta: Double) {
+        guard let type = tabs.cur?.type, type != .web else { return }
+        Fonts.shared.bump(type, by: delta)
+        let size = Fonts.shared.size(type)
+        for tab in tabs.list where tab.type == type {
+            switch tab.content {
+            case .terminal(let t): t.font = NSFont(name: cfg.font.mono, size: size)!
+            case .web(let w):      w.evaluateJavaScript("window.osmFont(\(size))")
+            case .agent:           break
+            }
+        }
     }
 
     func closeTab() {
@@ -42,7 +57,7 @@ final class Osmium {
 
     init() {
         setupMenu()
-        let window = GlassWindow(size: CGSize(width: 900, height: 600), radius: 12)
+        let window = GlassWindow(radius: 12)
         window.host(ZStack {
             Viewer(tabs: tabs)
             Sidebar(tabs: tabs, keyboard: keyb,
@@ -56,6 +71,8 @@ final class Osmium {
         keyb.on("opt ]", { self.tabs.swap(off: 1) })
         keyb.on("opt [", { self.tabs.swap(off: -1) })
         keyb.on("opt w", { self.closeTab() })
+        keyb.on("opt =", { self.bumpFont(1) })
+        keyb.on("opt -", { self.bumpFont(-1) })
 
         newTab(type: .terminal, path: "~", id: UUID().uuidString)   // open with one terminal; CLI skips its inject on fresh spawn
 
