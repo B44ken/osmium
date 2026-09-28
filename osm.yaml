@@ -17,4 +17,3 @@ agent:
   permissions: 'auto'
   effort: 'xhigh'
   model: 'claude/opus'
-  keys: {}

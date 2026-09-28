@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { $, file, sleep, spawn, FileSink } from "bun"
 import { resolve } from "path"
+import { closeSync, openSync } from "node:fs"
 
 const base = `${import.meta.dir}/../../`
 const help = `osmium\n  osm term\n  osm edit PATH\n  osm web URL\n  osm agent`
@@ -28,12 +29,15 @@ const establish = async (): Promise<boolean> => {
   }
 }
 
-const ensureEditServer = async () => {
-  const up = async () => fetch("http://127.0.0.1:7223/", { signal: AbortSignal.timeout(300) }).then(() => true, () => false)
+const ensureServer = async (port: number, script: string, hot = false) => {
+  const up = async () => fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(300) }).then(() => true, () => false)
   if (await up()) return
   // --hot: this server outlives the shell that spawned it, so without a watcher it would serve the
   // bundle it booted with forever. reloads in place, keeping open lsp sockets and the port.
-  spawn([process.execPath, "--hot", `${base}core/web/server.ts`], { stdout: "inherit", stderr: "inherit" })
+  // servers outlive this terminal; inherited output becomes unusable when it closes.
+  const log = openSync(`${base}log.txt`, 'a')
+  spawn([process.execPath, ...(hot ? ['--hot'] : []), `${base}${script}`], { detached: true, stdin: 'ignore', stdout: log, stderr: log }).unref()
+  closeSync(log)
   for (let i = 0; i < 50; i++) { if (await up()) return; await sleep(100) }
 }
 
@@ -48,7 +52,9 @@ const inject = async (type: string, path: string) => {
 
 const fresh = await establish()
 if (type === 'edit')
-  await ensureEditServer().then(() => inject('edit', resolve(arg ?? '.')))
+  await ensureServer(7223, 'core/web/server.ts', true).then(() => inject('edit', resolve(arg ?? '.')))
+else if (type === 'agent')
+  await ensureServer(7224, 'core/agent/web/server.ts').then(() => inject('agent', process.cwd()))
 else if (type === 'web') {
   const url = arg === undefined ? 'about:blank'
     : await file(arg).exists() ? Bun.pathToFileURL(resolve(arg)).href

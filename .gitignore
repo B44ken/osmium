@@ -1,4 +1,5 @@
 .DS_Store
+.freebuff
 osm.fifo
 log.txt
 node_modules

@@ -5,12 +5,10 @@ import SwiftTerm
 enum TabContent {
     case terminal(LocalProcessTerminalView)
     case web(WKWebView)
-    case agent(AgentSession)
+    case agent(AgentWeb)
 
-    @MainActor static func makeAgent(_ cwd: String, id: String, chat: PastChat? = nil) -> TabContent {
-        let s = AgentSession()
-        s.start(cwd: cwd, id: id, chat: chat)
-        return .agent(s)
+    @MainActor static func makeAgent(_ cwd: String, id: String) -> TabContent {
+        return .agent(AgentWeb(cwd: cwd, id: id))
     }
 
     @MainActor static func makeTerm(_ cwd: String) -> TabContent {

@@ -7,5 +7,8 @@ let package = Package(
     .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.20.0"),
     .package(url: "https://github.com/jpsim/Yams.git", from: "6.2.2"),
   ],
-  targets: [.executableTarget(name: "Osmium", dependencies: ["SwiftTerm", "Yams"], path: ".")],
+  targets: [
+    .executableTarget(name: "Osmium", dependencies: ["SwiftTerm", "Yams"], path: ".", exclude: ["tests"]),
+    .testTarget(name: "OsmiumTests", dependencies: ["Osmium"], path: "tests"),
+  ],
 )

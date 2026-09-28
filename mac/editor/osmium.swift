@@ -15,14 +15,14 @@ final class Osmium {
         Task { try? await Task.sleep(nanoseconds: UInt64(2e6)) }
     }
 
-    func newTab(type: TabType, path: String, id: String, chat: PastChat? = nil) {
+    func newTab(type: TabType, path: String, id: String) {
         let dir = type == .editor ? (path as NSString).deletingLastPathComponent : path
         let cwd = (dir as NSString).expandingTildeInPath   // zsh won't expand a literal "~" handed to it as a working directory
         let content: TabContent
         switch type {
         case .terminal: content = .makeTerm(cwd)
         case .web:      content = .makeWeb(path)
-        case .agent:    content = .makeAgent(path, id: id, chat: chat)
+        case .agent:    content = .makeAgent(path, id: id)
         case .editor:   content = .makeEdit(path)
         }
         if case .terminal(let term) = content { term.processDelegate = self }
@@ -32,7 +32,7 @@ final class Osmium {
 
     func resumeChat(_ chat: PastChat) {
         if tabs.list.contains(where: { $0.id == chat.id }) { tabs.curId = chat.id; return }
-        newTab(type: .agent, path: chat.cwd, id: chat.id, chat: chat)
+        newTab(type: .agent, path: chat.cwd, id: chat.id)
     }
 
     // opt+/opt- resizes every tab of the current tab's type; agent panes redraw off the observable
@@ -44,13 +44,19 @@ final class Osmium {
             switch tab.content {
             case .terminal(let t): t.font = NSFont(name: cfg.font.mono, size: size)!
             case .web(let w):      w.evaluateJavaScript("window.osmFont(\(size))")
-            case .agent:           break
+            case .agent(let a):    a.web.evaluateJavaScript("window.osmFont(\(size))")
             }
         }
     }
 
     func closeTab() {
         guard let id = tabs.curId else { return }
+        if case .agent(let agent) = tabs.cur?.content {
+            Task {
+                do { try await agent.close() }
+                catch { NSApp.presentError(error) }
+            }
+        }
         tabs.list.removeAll { $0.id == id }
         tabs.curId = tabs.list.last?.id
     }

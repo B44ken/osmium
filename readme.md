@@ -1,6 +1,6 @@
 # osmium
 
-osmium is a nice minimalist shell & editor & stuff. the agent harness supports claude, github copilot & chatgpt subscriptions, plus custom openai endpoints. currently it supports mac.
+osmium is a nice minimalist shell & editor & stuff. agents use your subscription (claude or codex) through acp. currently, it supports mac.
 
 https://github.com/user-attachments/assets/45b2af43-8a52-429a-8e30-2b74f2397556
 
@@ -15,7 +15,7 @@ curl $something | install.sh
 
 `opt [` `opt ]` switch tabs
 
-`opt =` `opt -` font size for the current pane type, saved to `~/.osm/osm.yaml`
+`opt -` `opt +` font size for the current pane
 
 **from the terminal**
 
@@ -28,7 +28,6 @@ osm edit ~/.osm/osm.yaml
 
 # new browser
 osm web github.com
-osm web http://localhost:3000
 osm web ./index.html
 
 # new agent
@@ -37,16 +36,13 @@ osm agent
 
 **settings**
 
-config is `osm.yaml` at the repo root (tracked defaults), with `~/.osm/osm.yaml`
-deep-merged over top of it for machine-local overrides and api keys. keys stay out
-of the repo. the defaults:
+edit `~/.osm/osm.yaml` to change these. for example:
 
 ```yaml
 font:
   mono: 'Menlo'
   sans: 'Inter'
-  size: 14          # fallback for panes with no entry below
-  sizes:            # per-pane, falls back to font.size
+  sizes:
     term: 15
     edit: 14
     agent: 14
@@ -58,13 +54,7 @@ window:
     slidedelay: 0.12
     slideduration: 0.06
 agent:
-  permissions: 'auto'
+  permissions: 'auto' # or `ask` or `bypass`
   effort: 'xhigh'
-  model: 'claude/opus'
-  keys: {}          # real keys live in ~/.osm/osm.yaml
+  model: 'codex/gpt-6-sol' # format is `provider/model`
 ```
-
-`agent.model` is `provider/model`. `copilot/*` runs on your copilot subscription
-(`copilot/claude-sonnet-4.6`, `copilot/gpt-5.6-sol`, ...), `claude/*` on your claude
-subscription, `cohere/*` on cohere, and anything else goes to openrouter using its
-own `vendor/model` ids.

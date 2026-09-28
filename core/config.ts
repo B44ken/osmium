@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 
 type Cfg = {
     font: { mono: string; sans: string; size: number; sizes: Record<string, number> }
-    agent: { permissions: string; effort: string; model: string; keys: Record<string, string> }
+    agent: { permissions: string; effort: string; model: string }
     window: { width: number; height: number; sidebar: { width: number; slidedelay: number; slideduration: number } }
 }
 

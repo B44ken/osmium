@@ -2,10 +2,8 @@ import { basicSetup } from "codemirror"
 import { EditorState, Compartment } from "@codemirror/state"
 import { EditorView, keymap, crosshairCursor } from "@codemirror/view"
 import { indentWithTab } from "@codemirror/commands"
-import { javascript } from "@codemirror/lang-javascript"
-import { python } from "@codemirror/lang-python"
-import { cpp } from "@codemirror/lang-cpp"
-import { yaml } from "@codemirror/lang-yaml"
+import { LanguageDescription } from "@codemirror/language"
+import { languages } from "@codemirror/language-data"
 import { oneDark } from "@codemirror/theme-one-dark"
 import { languageServer } from "codemirror-languageserver"
 
@@ -37,11 +35,10 @@ const ids: Record<string, string> = {
 }
 const id = ids[ext]
 
-const lang = id === 'python' ? python()
-    : id === 'c' || id === 'cpp' ? cpp()
-    : id === 'yaml' ? yaml()
-    : id ? javascript({ typescript: id.startsWith('typescript'), jsx: id.endsWith('react') })
-        : undefined
+const language = LanguageDescription.matchFilename(languages, path.slice(path.lastIndexOf('/') + 1))
+    // preserve existing aliases absent from the registry, such as .pyi
+    ?? (id ? LanguageDescription.matchLanguageName(languages, id, false) : null)
+const lang = await language?.load()
 
 // an extension with no server gets no socket at all — opening one only to be closed 1008 leaves a
 // half-wired client that then writes didOpen into a dead socket

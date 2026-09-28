@@ -9,6 +9,7 @@ struct Sidebar: View {
     var onPick: (PastChat) -> Void
     var onOpen: (String) -> Void
     @State private var past: [PastChat] = []
+    @State private var historyError: String?
     @State private var browser = Files.Browser()
 
     var body: some View {
@@ -18,6 +19,7 @@ struct Sidebar: View {
                     row(tilde(tab.title), selected: tabs.curId == tab.id, trailing: { statusDot(tab) }) { tabs.curId = tab.id }
                 }
                 if tabs.cur?.type == .agent {
+                    if let historyError { Text(historyError).font(.caption).foregroundStyle(.red) }
                     if !past.isEmpty {
                         heading("PAST CHATS")
                         ForEach(past) { chat in row(chat.title, selected: false) { onPick(chat) } }
@@ -42,17 +44,27 @@ struct Sidebar: View {
         .task(id: keyboard.doSidebar) {
             guard keyboard.doSidebar,
                   (try? await Task.sleep(for: .seconds(cfg.window.sidebar.slidedelay))) != nil else { return }
-            load()
+            await load()
         }
-        .onChange(of: tabs.curId) { if keyboard.doSidebar { load() } }   // refresh while cycling tabs
+        .onChange(of: tabs.curId) { if keyboard.doSidebar { Task { await load() } } }   // refresh while cycling tabs
     }
 
     // browsing resets to the tab's live cwd on every open and tab switch: the FILES list means
     // "what's in this tab's directory", so a browsed path must not outlive the visit
-    private func load() {
+    private func load() async {
         tabs.syncCwd()
+        historyError = nil
         guard let tab = tabs.cur else { past = []; browser = Files.Browser(); return }
-        if tab.type == .agent { past = Chats.list(cwd: tab.cwd); browser = Files.Browser() }
+        if tab.type == .agent {
+            browser = Files.Browser()
+            do { past = try await Chats.list(cwd: tab.cwd) }
+            catch {
+                // releasing option cancels the sidebar task, including its history request.
+                if Task.isCancelled { return }
+                past = []
+                historyError = "could not load past chats: \(error.localizedDescription)"
+            }
+        }
         else { browser.open(tab.cwd); past = [] }
     }
 
@@ -109,7 +121,7 @@ struct Viewer: View {
                     switch tab.content {
                     case .terminal(let term): TermView(term: term, active: active)
                     case .web(let web):       WebView(web: web, active: active)
-                    case .agent(let session): AgentSurface(session: session, active: active)
+                    case .agent(let agent): AgentSurface(agent: agent, active: active)
                     }
                 }
                 .opacity(active ? 1 : 0)
@@ -158,4 +170,3 @@ struct WebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView { web }
     func updateNSView(_ nsView: WKWebView, context: Context) { if active { focus(nsView) } }
 }
-
