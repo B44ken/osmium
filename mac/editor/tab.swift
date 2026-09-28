@@ -15,6 +15,7 @@ enum TabContent {
 
     @MainActor static func makeTerm(_ cwd: String) -> TabContent {
         let term = LocalProcessTerminalView(frame: .zero)
+        term.changeScrollback(10_000)
         term.font = NSFont(name: cfg.font.mono, size: Fonts.shared.size(.terminal))!
         term.getTerminal().setCursorStyle(.steadyBlock)
         term.installColors(OneDark.ansi)
@@ -23,8 +24,7 @@ enum TabContent {
         term.caretColor = OneDark.cursor
         term.selectedTextBackgroundColor = OneDark.selection
         term.layer!.backgroundColor = OneDark.bg.cgColor   // swiftterm only syncs this at init, and it shows through on resize
-        // system chrome can't take the one dark palette (swiftterm hardcodes .legacy and owns the
-        // scroller privately), so drop it and let bg show through; scrollWheel scrolls independently
+        // hide the native scrollbar; scrollWheel handles scrolling independently
         term.subviews.compactMap { $0 as? NSScroller }.first!.isHidden = true
         term.startProcess(executable: "/bin/zsh", args: ["-l"], environment: Terminal.getEnvironmentVariables() + ["OSM=1"],
                           currentDirectory: cwd)   // without this zsh inherits the app's cwd, which is / when the CLI spawns us detached
@@ -33,7 +33,10 @@ enum TabContent {
 
     @MainActor static func makeWeb(_ url: String) -> TabContent {
         let web = WKWebView(frame: .zero)
-        if let u = URL(string: url.isEmpty ? "about:blank" : url) { web.load(URLRequest(url: u)) }
+        if let u = URL(string: url.isEmpty ? "about:blank" : url) {
+            if u.isFileURL { web.loadFileURL(u, allowingReadAccessTo: u.deletingLastPathComponent()) }
+            else { web.load(URLRequest(url: u)) }
+        }
         return .web(web)
     }
 

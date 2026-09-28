@@ -28,6 +28,8 @@ osm edit ~/.osm/osm.yaml
 
 # new browser
 osm web github.com
+osm web http://localhost:3000
+osm web ./index.html
 
 # new agent
 osm agent

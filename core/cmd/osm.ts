@@ -13,7 +13,7 @@ if((!types.includes(sub))) console.log(help), process.exit(0)
 const type = sub ?? "term"
 
 const establish = async (): Promise<boolean> => {
-  if (!file(`/tmp/osm.fifo`).exists())
+  if (!await file(`/tmp/osm.fifo`).exists())
     await $`mkfifo /tmp/osm.fifo`
 
   try { await $`pgrep -a Osmium`.quiet(); return false }
@@ -38,7 +38,7 @@ const ensureEditServer = async () => {
 }
 
 const send = (fs: FileSink, type: string, path: string) =>
-  fs.write(`{ "cmd": "new", "type": "${type}", "path": "${path}", "id": "${crypto.randomUUID()}" }\n`)
+  fs.write(JSON.stringify({ cmd: "new", type, path, id: crypto.randomUUID() }) + "\n")
 
 const inject = async (type: string, path: string) => {
   const fs = file(`/tmp/osm.fifo`).writer()
@@ -49,6 +49,12 @@ const inject = async (type: string, path: string) => {
 const fresh = await establish()
 if (type === 'edit')
   await ensureEditServer().then(() => inject('edit', resolve(arg ?? '.')))
+else if (type === 'web') {
+  const url = arg === undefined ? 'about:blank'
+    : await file(arg).exists() ? Bun.pathToFileURL(resolve(arg)).href
+    : (URL.parse(arg) ?? new URL(`https://${arg}`)).href
+  await inject('web', url)
+}
 else if (!(fresh && type == 'term'))
   await inject(type, process.cwd())
 
